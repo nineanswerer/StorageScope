@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
-use storagescope_core::{fixtures, scanner::Scanner, stats, ScanConfig};
+use storagescope_core::{fixtures, scanner::Scanner, stats, ErrorCategory, ScanConfig};
 
 /// 参照实现：刻意简单的 std::fs 递归遍历，与扫描器实现完全独立。
 fn naive_reference(root: &Path) -> (u64, u64, u64) {
@@ -126,4 +126,49 @@ fn missing_root_reports_error_not_panic() {
     let scanner = Scanner::new(ScanConfig::default());
     let outcome = scanner.scan(Path::new("Z:/不存在的路径-xyz"), |_, _| {});
     assert!(!outcome.errors.is_empty(), "不存在的根目录应进入错误清单");
+}
+
+/// Windows 目录联接（junction）循环防护：
+/// 在数据集内放一个指回根目录的 junction，扫描必须在有限时间内结束、
+/// 统计不变、且该 junction 被记录为按策略跳过的重解析点。
+#[cfg(windows)]
+#[test]
+fn junction_cycle_skipped_not_followed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("fixture");
+    let expected = fixtures::generate(&root).unwrap();
+
+    let link = root.join("宽目录").join("loopback");
+    let status = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(&link)
+        .arg(&root)
+        .status()
+        .unwrap();
+    assert!(status.success(), "创建 junction 失败");
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let root2 = root.clone();
+    thread::spawn(move || {
+        let scanner = Scanner::new(ScanConfig::default());
+        let outcome = scanner.scan(&root2, |_, _| {});
+        tx.send(outcome).unwrap();
+    });
+    let outcome = rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("扫描超时卡死：可能跟随了 junction 造成循环");
+
+    assert!(!outcome.cancelled);
+    assert_eq!(
+        outcome.file_count(),
+        expected.file_count,
+        "junction 不得被跟随，统计不得变化"
+    );
+    assert!(
+        outcome
+            .errors
+            .iter()
+            .any(|e| e.category == ErrorCategory::SkippedReparsePoint),
+        "junction 应被记录为按策略跳过的重解析点"
+    );
 }

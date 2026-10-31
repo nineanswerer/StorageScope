@@ -1,0 +1,61 @@
+… 已扫描 5000 个文件，1.2 GB，当前：D:\mc\BakaXL\.minecraft\versions\Create Astral\config\compressor\resourcepacks\compressor\resources\assets\compressor\blockstates\compressed_stone.json
+… 已扫描 10000 个文件，1.6 GB，当前：D:\mc\BakaXL\.minecraft\versions\Create Astral\patched_shaders\023_entities_solid_diffuse.vsh
+… 已扫描 15000 个文件，1.6 GB，当前：D:\mc\BakaXL\.minecraft\versions\Create Astral\resourcepacks\rgui-astral\assets\tconstruct\textures\gui\generic.png
+… 已扫描 20000 个文件，2.7 GB，当前：D:\mc\CurseForge\Install\assets\objects\42\42d0cf9e4bc25a24613d591fc725718c743fa14e
+… 已扫描 25000 个文件，4.8 GB，当前：D:\mc\CurseForge\Instances\DeceasedCraft - Urban Zombie Apocalypse\config\ftbquests\quests\chapters\refined_storage.snbt
+… 已扫描 30000 个文件，5.5 GB，当前：D:\mc\CurseForge\Instances\DeceasedCraft - Urban Zombie Apocalypse\tacz\tacz_default_gun\assets\tacz\textures\attachment\uv\muzzle_silencer_mirage_n.png
+… 已扫描 35000 个文件，6.2 GB，当前：D:\mc\CurseForge\Instances\Desecrated - Flesh and Blood\mods\lootjs-forge-1.20.1-2.13.1.jar
+… 已扫描 40000 个文件，7.6 GB，当前：D:\mc\CurseForge\Instances\Desecrated - Flesh and Blood __\mods\StylishEffects-v8.0.4-1.20.1-Forge.jar
+… 已扫描 45000 个文件，9.2 GB，当前：D:\mc\HMCL\.minecraft\assets\objects\c2\c27a5dfd1f85834d0238273dfc7227b85776afc8
+… 已扫描 50000 个文件，10.5 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\assets\objects\4b\4b2e55a9c456755932eca2125a93054a6c0c4c7e
+… 已扫描 55000 个文件，11.7 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\assets\objects\ab\abfac9a19a1858c70c0888f88642b69c4e7b26e8
+… 已扫描 60000 个文件，12.7 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\assets\skins\24\24b387ac986e6a25c2fae24403039baa408b1a7c
+… 已扫描 65000 个文件，14.5 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\1.20.1-Forge_47.4.13 6人一起那个-随机方块空岛\mods\[连锁破坏] ftb-ultimine-forge-2001.1.7.jar
+… 已扫描 70000 个文件，15.9 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\1.21.10 我的世界小游戏派对2\saves\我的世界派对 2（联壁汉化1.01）\datapacks\data\data\mcp\function\hotbar_purple.mcfunction
+… 已扫描 75000 个文件，17.0 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\1.21.10forge\saves\我的世界派对 2（联壁汉化1.01）\datapacks\data\data\mcp\function\fort_suits_vulcan_button.mcfunction
+… 已扫描 80000 个文件，18.8 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\1.未汉化Cisco's Fantasy Medieval RPG [Ultimate]-rpg第一部\config\paxi\datapacks\CiscoRpgOrigin\data\medievalorigins\origins\gorgon.json
+… 已扫描 85000 个文件，20.2 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\2.未汉化Cisco's Fantasy Medieval RPG [Dragonfyre] rpg-第二部\config\relics\relics\horse_flute.yaml
+… 已扫描 90000 个文件，21.9 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\Chocolate Edition Minecraft 巧克力冒险-已汉化\config\blockswap\known_states\environmental\willow_leaf_pile.json5
+… 已扫描 95000 个文件，21.9 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\Chocolate Edition Minecraft 巧克力冒险-已汉化\config\blockswap\known_states\serene_shrubbery\purple_lupine.json5
+… 已扫描 100000 个文件，22.6 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\Chocolate Edition Minecraft 巧克力冒险-已汉化\config\paxi\datapacks\minecraftvillagenpcs\data\minecraft\structures\village\desert\zombie\houses\desert_medium_house_1.nbt
+… 已扫描 105000 个文件，24.4 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\Create-Delight-Remake 齿轮盛宴\kubejs\assets\createdelight\textures\item\deep_sea_sushi_roll_slice.png
+… 已扫描 110000 个文件，25.3 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\Create-Delight-Remake 齿轮盛宴\tacz\Applied Armorer-v1.1.4.1-for114+\assets\applied_armorer\tacz_sounds\moritz_rifle_ar77\moritz_rifle_ar77_shoot.ogg
+… 已扫描 115000 个文件，26.1 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\Desecrated-1.2.0-简体中文-R5\mods\FastLeafDecay-32.jar
+… 已扫描 120000 个文件，29.8 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\FTB OceanBlock 2\shaderpacks\ComplementaryUnbound_r5.5.1 + EuphoriaPatches_1.6.4\shaders\world0\composite2.vsh
+… 已扫描 125000 个文件，30.1 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\FTB StoneBlock 4 石头冒险\kubejs\assets\ftb\guides\ftb\guide\_zh_cn\upgrades\t3\ae2.md
+… 已扫描 130000 个文件，32.8 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\FunDinoModpack化石发掘考古 轻量包\journeymap\data\sp\新的世界 (1)\overworld\2\0,-2.png
+… 已扫描 135000 个文件，34.2 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\Lucky World Invasion 幸运方块赛道\tacz\gucci_vuitton_attachment\data\gucci_attachments\index\attachments\muzzle_fr_coors2.json
+… 已扫描 140000 个文件，35.5 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\SkyFactory 5 使用ftb任务\global_packs\required_data\skyfactory_5\data\cookingforblockheads\cookingforblockheads\compat\pamhc2foodextended.json
+… 已扫描 145000 个文件，35.5 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\SkyFactory 5 使用ftb任务\global_packs\required_data\tag_unification\data\minecraft\tags\items\logs_that_burn.json
+… 已扫描 150000 个文件，37.5 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\哈比列车-终点站\config\xwathemap\big_train\environment\right\big_train_env_right_7.nbt
+… 已扫描 155000 个文件，39.0 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\大都市\simukraftbuilding\commercial\meatStand.json
+… 已扫描 160000 个文件，39.3 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\大都市\tlm_custom_pack\touhou_little_maid-1.0.0\assets\touhou_little_maid_old\models\entity\yumemi_okazaki.json
+… 已扫描 165000 个文件，40.3 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\已汉化Cursed Walking - A Modern Zombie Apocalypse 出生地下避难所-末日僵尸pve\shaderpacks\ComplementaryUnbound_r5.8.1 + EuphoriaPatches_1.9.2\shaders\world1\gbuffers_hand.fsh
+… 已扫描 170000 个文件，40.4 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\已汉化DawnCraft - Echoes of Legends 魂游rpg-生存探索\defaultconfigs\betterstrongholds\forge-1_18_2\itemframes.json
+… 已扫描 175000 个文件，41.5 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\已汉化RAD3-1.20 进的慢-rpg生存探索\config\ftbquests\quests\reward_tables\ancient_tomes.snbt
+… 已扫描 180000 个文件，42.4 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\已汉化SkyFactory 5 天空工厂5-恢复颜色\global_packs\required_data\advancement_removal\data\create\advancements\lava_wheel_00000.json
+… 已扫描 185000 个文件，42.4 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\已汉化SkyFactory 5 天空工厂5-恢复颜色\global_packs\required_data\tag_unification\data\forge\tags\fluids\biomass.json
+… 已扫描 190000 个文件，43.3 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\已汉化Swords And Skills ｜ RPG Series 多技能树，生存档 探索-白-好玩\modernfix\structureCacheV1\nova_structures_desert_ruin_mob_desert_ruins_mob_husk_d01cac5575.nbt
+… 已扫描 195000 个文件，44.4 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\幸运方块\tacz\tacz_default_gun\assets\tacz\textures\attachment\slot\stock_tactical_ar.png
+… 已扫描 200000 个文件，45.7 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\未汉化Better MC [FORGE] BMC4\config\eldritch_end\items\xal.json
+… 已扫描 205000 个文件，46.5 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\未汉化Better MC [FORGE] BMC4\mods\improved-village-placement-1.1.2.jar
+… 已扫描 210000 个文件，46.9 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\未汉化Better MC [FORGE] BMC4\shaderpacks\Better MC - Very Low\shaders\world-1\shadow.vsh
+… 已扫描 215000 个文件，48.4 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\机械动力航空学整合包.1\mods\superbwarfare-1.21.1-0.8.8-final-0cfd00d5.jar
+… 已扫描 220000 个文件，48.8 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\机械动力航空学整合包.1\tacz\tacz_default_gun\assets\tacz\display\attachments\grip_cqr_display.json
+… 已扫描 225000 个文件，51.6 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\登神者：天阶咏叹v1.3.6fix\config\ponder-client.toml
+… 已扫描 230000 个文件，53.5 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\登神者：天阶咏叹v1.3.6fix\saves\马枪1\dimensions\the_bumblezone\the_bumblezone\region\r.-2.-2.mca
+… 已扫描 235000 个文件，55.7 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\登神者：天阶咏叹v1.3.6fix\xaero\world-map\马枪\null\caves\-1\cache_1\7_-6.xwmc.outdated
+… 已扫描 240000 个文件，57.0 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\神秘启旅\tlm_custom_pack\touhou_little_maid-1.0.0\assets\touhou_little_maid_seihou\models\entity\vivit.json
+… 已扫描 245000 个文件，57.1 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\自主汉化Partly Cloudy 过山车模拟整合包\dynamic-data-pack-cache\suppsquared-dynamic_assets\data\suppsquared\recipe\biomeswevegone\item_shelf_green_enchanted.json
+… 已扫描 250000 个文件，57.1 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\自主汉化Partly Cloudy 过山车模拟整合包\kubejs\assets\assets\repurposed_structures\atlas\structure\piece\jigsaw\single\village\crimson\zombie\houses\taiga_temple_1.json
+… 已扫描 255000 个文件，58.4 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\逆转未来1.1.4 和马枪\CustomSkinLoader\caches\ae353c777326e0c9e4fced991e42510f98602b1b
+… 已扫描 260000 个文件，61.5 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\逆转未来1.1.4 和马枪\saves\马枪\dimensions\mimic\the_lethean_sea\region\r.-6.0.mca
+… 已扫描 265000 个文件，62.8 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\锻造之旅\kubejs\assets\ftblibrary\textures\icons\toggle_day.png
+… 已扫描 270000 个文件，63.1 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\锻造之旅\modernfix\structureCacheV1\tetra_forged_ruins_intersection_6_d9bb3bf3b1.nbt
+… 已扫描 275000 个文件，64.3 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\锻造之旅—无尽征途0.4.3\kubejs\server\exported\tetra_data_kubejs_kjs_dump\tetra\materials\gem\gem_disorienting_gai_1.js
+… 已扫描 280000 个文件，65.3 GB，当前：D:\mc\PCL2\PCL 正式版 2.8.13\.minecraft\versions\锻造之旅—无尽征途0.4.3\tlm_custom_pack\touhou_little_maid-1.0.0\assets\touhou_little_maid\sounds\maid\mode\idle9.ogg
+… 已扫描 285000 个文件，73.9 GB，当前：D:\mc\包\新建文件夹\捕梦者 资源包\assets\minecraft\textures\block\sniffer_egg_very_cracked_north.png
+… 已扫描 290000 个文件，75.9 GB，当前：D:\mc\素材文件\图标\机械动力\assets\create\blockstates\polished_cut_granite_stairs.json
+… 已扫描 295000 个文件，75.9 GB，当前：D:\mc\蟑螂\.minecraft\assets\objects\0c\0c918eebe2806c47fb406527dffdb54939490324
+… 已扫描 300000 个文件，76.6 GB，当前：D:\mc\蟑螂\.minecraft\assets\objects\ac\acbc271d03e739bf45004c3c52e9fd178aa3bdd9
+… 已扫描 305000 个文件，78.7 GB，当前：D:\mc\蟑螂\.minecraft\versions\Nirvana-0.2.9-fix 旅途的中点\saves\新的世界\dimensions\twilightforest\twilight_forest\region\r.1.1.mca

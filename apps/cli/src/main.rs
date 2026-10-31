@@ -33,6 +33,8 @@ enum Cmd {
         #[arg(long, default_value_t = 500)]
         files: usize,
     },
+    /// 诊断探针：纯 std 串行遍历，报告每个目录的条目数
+    Probe { path: PathBuf },
     /// 快照管理
     Snap {
         #[command(subcommand)]
@@ -181,8 +183,54 @@ fn main() {
                 }
             }
         }
-        Cmd::Snap { cmd } => match cmd {
-            SnapCmd::Save { path, db } => {
+        Cmd::Probe { path } => {
+            // 纯 std 迭代式遍历探针：定位 jwalk 空转的确切位置
+            let mut stack = vec![path];
+            let mut dirs = 0u64;
+            let mut files = 0u64;
+            let started = std::time::Instant::now();
+            while let Some(d) = stack.pop() {
+                match std::fs::read_dir(&d) {
+                    Ok(rd) => {
+                        let mut count = 0u64;
+                        for e in rd {
+                            let e = match e {
+                                Ok(x) => x,
+                                Err(err) => {
+                                    println!("ERR {}：{}", d.display(), err);
+                                    continue;
+                                }
+                            };
+                            count += 1;
+                            match e.file_type() {
+                                Ok(ft) if ft.is_symlink() => {
+                                    println!("LINK {}", e.path().display());
+                                }
+                                Ok(ft) if ft.is_dir() => stack.push(e.path()),
+                                Ok(_) => files += 1,
+                                Err(err) => println!("ERR-FT {}：{}", e.path().display(), err),
+                            }
+                        }
+                        dirs += 1;
+                        if count > 5000 {
+                            println!("BIGDIR {} 个条目：{}", count, d.display());
+                        }
+                        if dirs % 2000 == 0 {
+                            eprintln!(
+                                "… dirs={} files={} 待处理={} 耗时{:?}",
+                                dirs,
+                                files,
+                                stack.len(),
+                                started.elapsed()
+                            );
+                        }
+                    }
+                    Err(e) => println!("ERRDIR {}：{}", d.display(), e),
+                }
+            }
+            println!("完成：{} 目录，{} 文件，耗时 {:?}", dirs, files, started.elapsed());
+        }
+        Cmd::Snap { cmd } => match cmd {            SnapCmd::Save { path, db } => {
                 let scanner = Scanner::new(ScanConfig::default());
                 let cancel = scanner.cancel_handle();
                 ctrlc::set_handler(move || {
