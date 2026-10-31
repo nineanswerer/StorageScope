@@ -11,14 +11,15 @@ type DirStat = {
 };
 
 // ---------------------------------------------------------------------------
-// 3D 立体树（球树布局）：根在中心，每层是一圈向下微倾的环，
-// 子节点在父节点的扇形楔内按大小分角度。节点球大小 ∝ log(体积)。
-// 点击节点重新以其为根；面包屑返回。缓慢自转，交互时暂停。
+// 3D 立体树：根在中心，每层一圈向下微倾的环，子节点在父节点扇形楔内按大小分角度。
+// 形状编码深度：根=二十面体 / 一层=八面体 / 二层=立方体 / 三层=十二面体 / 深层=球。
+// 大小 ∝ log(体积)；颜色 = 分支色系，橙色 = 可清理。点击下钻，面包屑返回。
+// 拾取用放大的隐形球代理，小节点也好点；拖动超过 6px 不算点击。
 // ---------------------------------------------------------------------------
 
-const RING_GAP = 42; // 每层半径间隔
-const LAYER_DROP = 9; // 每层向下倾斜（锥形轮廓）
-const TOP_K = 8; // 每个节点最多展开的子节点数
+const RING_GAP = 42;
+const LAYER_DROP = 9;
+const TOP_K = 8;
 const MAX_DEPTH = 6;
 const MAX_NODES = 900;
 
@@ -34,11 +35,10 @@ type LayoutNode = {
   pos: THREE.Vector3;
   depth: number;
   topName: string;
-  pruned: number; // 被折叠隐藏的子树数量（0 = 完整）
+  pruned: number;
 };
 type Edge = [THREE.Vector3, THREE.Vector3];
 
-/** 球树布局：递归分扇形楔。返回节点与边。 */
 function balloonLayout(root: DirStat) {
   const nodes: LayoutNode[] = [];
   const edges: Edge[] = [];
@@ -63,7 +63,6 @@ function balloonLayout(root: DirStat) {
     const hidden = kids.slice(TOP_K);
     if (hidden.length > 0) {
       me.pruned = hidden.length;
-      // 折叠部分聚合成一个"其他"叶子
       const restSize = hidden.reduce((s, c) => s + c.total_size, 0);
       const restFiles = hidden.reduce((s, c) => s + c.file_count, 0);
       shown.push({
@@ -118,6 +117,20 @@ function focusOf(tree: DirStat, path: string[]): DirStat {
   return node;
 }
 
+/** 每个深度档位的几何体：形状即深度。 */
+function makeShapeGeos(): { key: string; geo: THREE.BufferGeometry }[] {
+  return [
+    { key: "root", geo: new THREE.IcosahedronGeometry(1, 1) },
+    { key: "d1", geo: new THREE.OctahedronGeometry(1, 0) },
+    { key: "d2", geo: new THREE.BoxGeometry(1.55, 1.55, 1.55) },
+    { key: "d3", geo: new THREE.DodecahedronGeometry(1, 0) },
+    { key: "deep", geo: new THREE.SphereGeometry(1, 12, 8) },
+  ];
+}
+function shapeKeyOf(depth: number) {
+  return depth === 0 ? "root" : depth === 1 ? "d1" : depth === 2 ? "d2" : depth === 3 ? "d3" : "deep";
+}
+
 export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlight?: Set<string> }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -133,7 +146,6 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
     return map;
   }, [tree]);
 
-  // 面包屑
   const crumbs: { label: string; path: string[] }[] = [{ label: tree.name, path: [] }];
   {
     let n = tree;
@@ -187,14 +199,13 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
     key.position.set(200, 400, 150);
     scene.add(key);
 
-    // 地面参考网格（比树大两圈）
     const grid = new THREE.GridHelper(Math.max(840, extent * 2.6), 42, 0x2a5a8c, 0x14283f);
     (grid.material as THREE.LineBasicMaterial).transparent = true;
     (grid.material as THREE.LineBasicMaterial).opacity = 0.35;
     grid.position.y = -MAX_DEPTH * LAYER_DROP - 8;
     scene.add(grid);
 
-    // 边：一个 LineSegments
+    // 边
     const edgePos = new Float32Array(edges.length * 6);
     edges.forEach(([a, b], i) => {
       edgePos.set([a.x, a.y, a.z, b.x, b.y, b.z], i * 6);
@@ -204,8 +215,7 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
     const edgeMat = new THREE.LineBasicMaterial({ color: 0x3d6a9c, transparent: true, opacity: 0.5 });
     scene.add(new THREE.LineSegments(edgeGeo, edgeMat));
 
-    // 节点：一个 InstancedMesh 球
-    const sphereGeo = new THREE.SphereGeometry(1, 20, 14);
+    // 节点材质（共享）：instanceColor 同时驱动漫反射与自发光
     const nodeMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       roughness: 0.3,
@@ -219,28 +229,63 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
         "#include <emissivemap_fragment>\n\ttotalEmissiveRadiance *= vColor.rgb;"
       );
     };
-    const inst = new THREE.InstancedMesh(sphereGeo, nodeMat, nodes.length);
-    const m4 = new THREE.Matrix4();
-    const quat = new THREE.Quaternion();
-    const col = new THREE.Color();
-    const scl = new THREE.Vector3();
-    nodes.forEach((n, i) => {
+
+    // 按深度档位分组：每组一个可见 InstancedMesh + 一个放大的隐形拾取代理
+    const shapeGeos = makeShapeGeos();
+    const pickGeo = new THREE.SphereGeometry(1, 10, 8);
+    const pickMat = new THREE.MeshBasicMaterial();
+    pickMat.visible = false; // 不渲染，但 raycast 仍命中
+    const disposables: { dispose: () => void }[] = [...shapeGeos.map((g) => g.geo), pickGeo, pickMat, nodeMat, edgeGeo, edgeMat];
+
+    const groups = new Map<string, LayoutNode[]>();
+    for (const n of nodes) {
+      const k = shapeKeyOf(n.depth);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k)!.push(n);
+    }
+
+    const radiusOf = (n: LayoutNode) => {
       const t = Math.log10(1 + n.stat.total_size / 1e6) / maxLog;
-      const radius = 1.4 + 5.2 * t;
-      scl.setScalar(radius);
-      m4.compose(n.pos, quat, scl);
-      inst.setMatrixAt(i, m4);
+      return 1.4 + 5.2 * t;
+    };
+    const colorOf = (n: LayoutNode) => {
+      const col = new THREE.Color();
       const hue = hues.get(n.topName) ?? 0.55;
-      if (highlight?.has(n.stat.rel_path)) col.setHSL(0.075, 0.95, 0.55); // 橙色 = 可清理
+      if (highlight?.has(n.stat.rel_path)) col.setHSL(0.075, 0.95, 0.55); // 橙 = 可清理
       else if (n.stat.name.startsWith("…其他")) col.setHSL(hue, 0.15, 0.35);
       else col.setHSL(hue, 0.7, 0.5 + 0.1 * Math.min(n.depth / MAX_DEPTH, 1));
-      inst.setColorAt(i, col);
-    });
-    inst.instanceMatrix.needsUpdate = true;
-    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-    scene.add(inst);
+      return col;
+    };
 
-    // 顶层标签（当前聚焦树的直接子节点）
+    const pickMeshes: THREE.InstancedMesh[] = [];
+    const m4 = new THREE.Matrix4();
+    const quat = new THREE.Quaternion();
+    const scl = new THREE.Vector3();
+    for (const { key, geo } of shapeGeos) {
+      const group = groups.get(key);
+      if (!group || group.length === 0) continue;
+      const inst = new THREE.InstancedMesh(geo, nodeMat, group.length);
+      const pick = new THREE.InstancedMesh(pickGeo, pickMat, group.length);
+      pick.userData.nodes = group;
+      group.forEach((n, i) => {
+        scl.setScalar(radiusOf(n));
+        m4.compose(n.pos, quat, scl);
+        inst.setMatrixAt(i, m4);
+        inst.setColorAt(i, colorOf(n));
+        // 拾取代理放大 1.9 倍，小节点不再难瞄准
+        scl.setScalar(radiusOf(n) * 1.9);
+        m4.compose(n.pos, quat, scl);
+        pick.setMatrixAt(i, m4);
+      });
+      inst.instanceMatrix.needsUpdate = true;
+      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+      pick.instanceMatrix.needsUpdate = true;
+      scene.add(inst);
+      scene.add(pick);
+      pickMeshes.push(pick);
+    }
+
+    // 顶层标签
     const labelSprites: THREE.Sprite[] = [];
     for (const n of nodes) {
       if (n.depth === 1) {
@@ -251,19 +296,20 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
       }
     }
 
-    // 悬停拾取 + 点击下钻
+    // 悬停拾取（只打代理球）+ 点击下钻（拖动 >6px 不算点击）
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    let hoverId = -1;
+    let hoverNode: LayoutNode | null = null;
+    let downX = 0, downY = 0;
     const onMove = (ev: PointerEvent) => {
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
       raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObject(inst)[0];
+      const hit = raycaster.intersectObjects(pickMeshes)[0];
       const tip = tooltipRef.current;
       if (hit && hit.instanceId !== undefined) {
-        const n = nodes[hit.instanceId];
-        hoverId = hit.instanceId;
+        const n = (hit.object.userData.nodes as LayoutNode[])[hit.instanceId];
+        hoverNode = n;
         if (tip) {
           tip.style.display = "block";
           tip.style.left = `${ev.clientX - rect.left + 14}px`;
@@ -272,21 +318,22 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
         }
         renderer.domElement.style.cursor = n.stat.children.length > 0 ? "pointer" : "grab";
       } else {
-        hoverId = -1;
+        hoverNode = null;
         if (tip) tip.style.display = "none";
         renderer.domElement.style.cursor = "grab";
       }
     };
-    const onClick = () => {
-      if (hoverId >= 0) {
-        const n = nodes[hoverId];
-        if (n.stat.children.length > 0 && !n.stat.name.startsWith("…其他")) {
-          setPath([...path, n.stat.rel_path]);
-        }
+    const onDown = (ev: PointerEvent) => { downX = ev.clientX; downY = ev.clientY; };
+    const onUp = (ev: PointerEvent) => {
+      if (Math.hypot(ev.clientX - downX, ev.clientY - downY) > 6) return; // 拖动不触发
+      const n = hoverNode;
+      if (n && n.stat.children.length > 0 && !n.stat.name.startsWith("…其他")) {
+        setPath([...path, n.stat.rel_path]);
       }
     };
     renderer.domElement.addEventListener("pointermove", onMove);
-    renderer.domElement.addEventListener("click", onClick);
+    renderer.domElement.addEventListener("pointerdown", onDown);
+    renderer.domElement.addEventListener("pointerup", onUp);
 
     let raf = 0;
     const animate = () => {
@@ -300,13 +347,11 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
       cancelAnimationFrame(raf);
       if (resumeTimer) clearTimeout(resumeTimer);
       renderer.domElement.removeEventListener("pointermove", onMove);
-      renderer.domElement.removeEventListener("click", onClick);
+      renderer.domElement.removeEventListener("pointerdown", onDown);
+      renderer.domElement.removeEventListener("pointerup", onUp);
       controls.dispose();
       renderer.dispose();
-      sphereGeo.dispose();
-      nodeMat.dispose();
-      edgeGeo.dispose();
-      edgeMat.dispose();
+      disposables.forEach((d) => d.dispose());
       labelSprites.forEach((s) => {
         (s.material as THREE.SpriteMaterial).map?.dispose();
         (s.material as THREE.SpriteMaterial).dispose();
@@ -331,7 +376,8 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
         </span>
       </div>
       <div className="summary" style={{ marginBottom: 6 }}>
-        立体树状图：球 = 目录，连线 = 从属关系，球大小 ∝ 体积。点击球下钻，悬停看详情；拖动旋转，停止 3 秒后缓慢自转。
+        形状 = 深度（根◆二十面体 → 八面体 → 立方体 → 十二面体 → 深层小球），大小 ∝ 体积，橙色 = 可清理。
+        点击节点下钻，悬停看详情；拖动旋转，停止 3 秒后缓慢自转。
         当前聚焦：{focus.rel_path}（{humanSize(focus.total_size)}）
       </div>
       <div className="city-view" style={{ position: "relative" }}>
