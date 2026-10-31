@@ -202,3 +202,27 @@ h3 {
   margin-bottom: 10px;
   border: 1px solid #2c313a;
 }
+
+.hier-svg {
+  width: 100%;
+  height: auto;
+  background: #14161a;
+  border-radius: 8px;
+  border: 1px solid #2c313a;
+}
+
+.crumbs {
+  font-size: 13px;
+  color: #9ab;
+  margin-left: 10px;
+}
+
+.crumb {
+  color: #7fd4ff;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.crumb:hover {
+  text-decoration: underline;
+}

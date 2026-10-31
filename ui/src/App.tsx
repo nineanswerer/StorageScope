@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import CityView from "./CityView";
+import HierarchyViews from "./HierarchyViews";
 import "./App.css";
 
 type DirStat = {
@@ -133,7 +134,7 @@ export default function App() {
   const [analysis, setAnalysis] = useState<AnalysisReport | null>(null);
   const [skipDupes, setSkipDupes] = useState(false);
   const [dupeMinMib, setDupeMinMib] = useState(1);
-  const [showCity, setShowCity] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "hier" | "city">("list");
 
   useEffect(() => {
     const un = listen<Progress>("scan-progress", (e) => setProgress(e.payload));
@@ -282,13 +283,21 @@ export default function App() {
         <section className="card">
           <h2>2. 目录结构</h2>
           <div className="row">
+            <button className={viewMode === "list" ? "primary" : ""} onClick={() => setViewMode("list")}>
+              列表
+            </button>
+            <button className={viewMode === "hier" ? "primary" : ""} onClick={() => setViewMode("hier")}>
+              层级图
+            </button>
+            <button className={viewMode === "city" ? "primary" : ""} onClick={() => setViewMode("city")}>
+              3D 城市
+            </button>
+            <span style={{ flex: 1 }} />
             <button onClick={() => exportTree("json")}>导出 JSON</button>
             <button onClick={() => exportTree("csv")}>导出 CSV</button>
-            <button onClick={() => setShowCity(!showCity)}>
-              {showCity ? "收起 3D 城市" : "3D 城市视图"}
-            </button>
           </div>
-          {showCity && (
+          {viewMode === "hier" && <HierarchyViews tree={tree} />}
+          {viewMode === "city" && (
             <>
               <div className="summary">
                 每栋楼 = 一个目录，楼高 ∝ 体积（对数刻度），同街区同色系。拖动旋转，滚轮缩放。
@@ -296,9 +305,11 @@ export default function App() {
               <CityView tree={tree} />
             </>
           )}
-          <div className="tree">
-            <TreeNode stat={tree} depth={0} />
-          </div>
+          {viewMode === "list" && (
+            <div className="tree">
+              <TreeNode stat={tree} depth={0} />
+            </div>
+          )}
         </section>
       )}
 
