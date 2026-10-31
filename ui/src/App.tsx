@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import CityView from "./CityView";
 import HierarchyViews from "./HierarchyViews";
+import Tree3DView from "./Tree3DView";
 import "./App.css";
 
 type DirStat = {
@@ -134,7 +135,7 @@ export default function App() {
   const [analysis, setAnalysis] = useState<AnalysisReport | null>(null);
   const [skipDupes, setSkipDupes] = useState(false);
   const [dupeMinMib, setDupeMinMib] = useState(1);
-  const [viewMode, setViewMode] = useState<"list" | "hier" | "city">("list");
+  const [viewMode, setViewMode] = useState<"list" | "hier" | "city" | "tree3d">("list");
 
   useEffect(() => {
     const un = listen<Progress>("scan-progress", (e) => setProgress(e.payload));
@@ -289,13 +290,14 @@ export default function App() {
             <button className={viewMode === "hier" ? "primary" : ""} onClick={() => setViewMode("hier")}>
               层级图
             </button>
-            <button className={viewMode === "city" ? "primary" : ""} onClick={() => setViewMode("city")}>
-              3D 城市
+            <button className={viewMode === "tree3d" ? "primary" : ""} onClick={() => setViewMode("tree3d")}>
+              3D 树
             </button>
             <span style={{ flex: 1 }} />
             <button onClick={() => exportTree("json")}>导出 JSON</button>
             <button onClick={() => exportTree("csv")}>导出 CSV</button>
           </div>
+          {viewMode === "tree3d" && <Tree3DView tree={tree} />}
           {viewMode === "hier" && <HierarchyViews tree={tree} />}
           {viewMode === "city" && (
             <>

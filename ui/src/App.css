@@ -226,3 +226,19 @@ h3 {
 .crumb:hover {
   text-decoration: underline;
 }
+
+.tree3d-tooltip {
+  position: absolute;
+  z-index: 10;
+  background: rgba(10, 16, 26, 0.92);
+  color: #eaf6ff;
+  border: 1px solid #2c3a4c;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
