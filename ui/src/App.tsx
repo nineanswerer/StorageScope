@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -138,6 +138,21 @@ export default function App() {
   const [viewMode, setViewMode] = useState<"list" | "hier" | "city" | "tree3d">("list");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [trashing, setTrashing] = useState(false);
+
+  // M7 视图联动：可清理目录集合 = 缓存命中目录 + 含重复文件的目录
+  const cleanableDirs = useMemo(() => {
+    const s = new Set<string>();
+    if (analysis) {
+      for (const h of analysis.cache_hits) s.add(h.rel_path);
+      for (const g of analysis.dupe_groups) {
+        for (const p of g.files) {
+          const i = p.lastIndexOf("/");
+          s.add(i >= 0 ? p.slice(0, i) : "");
+        }
+      }
+    }
+    return s;
+  }, [analysis]);
 
   type TrashReport = {
     results: { path: string; ok: boolean; error: string | null }[];
@@ -359,7 +374,7 @@ export default function App() {
       </section>
 
       {tree && (
-        <section className="card">
+        <section className="card" id="structure-card">
           <h2>2. 目录结构</h2>
           <div className="row">
             <button className={viewMode === "list" ? "primary" : ""} onClick={() => setViewMode("list")}>
@@ -375,8 +390,8 @@ export default function App() {
             <button onClick={() => exportTree("json")}>导出 JSON</button>
             <button onClick={() => exportTree("csv")}>导出 CSV</button>
           </div>
-          {viewMode === "tree3d" && <Tree3DView tree={tree} />}
-          {viewMode === "hier" && <HierarchyViews tree={tree} />}
+          {viewMode === "tree3d" && <Tree3DView tree={tree} highlight={cleanableDirs} />}
+          {viewMode === "hier" && <HierarchyViews tree={tree} highlight={cleanableDirs} />}
           {viewMode === "city" && (
             <>
               <div className="summary">
@@ -555,6 +570,17 @@ export default function App() {
               <span className="summary" style={{ margin: 0 }}>
                 勾选要清理的项；重复文件组始终保留第一份。走系统回收站，可恢复。
               </span>
+              <span style={{ flex: 1 }} />
+              {tree && (
+                <button
+                  onClick={() => {
+                    setViewMode("tree3d");
+                    document.getElementById("structure-card")?.scrollIntoView({ behavior: "smooth" });
+                  }}
+                >
+                  在 3D 树中查看（橙色 = 可清理）
+                </button>
+              )}
             </div>
 
             <h3>缓存 / 可清理项（{analysis.cache_hits.length}）</h3>

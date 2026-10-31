@@ -118,7 +118,7 @@ function focusOf(tree: DirStat, path: string[]): DirStat {
   return node;
 }
 
-export default function Tree3DView({ tree }: { tree: DirStat }) {
+export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlight?: Set<string> }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [path, setPath] = useState<string[]>([]);
@@ -231,7 +231,8 @@ export default function Tree3DView({ tree }: { tree: DirStat }) {
       m4.compose(n.pos, quat, scl);
       inst.setMatrixAt(i, m4);
       const hue = hues.get(n.topName) ?? 0.55;
-      if (n.stat.name.startsWith("…其他")) col.setHSL(hue, 0.15, 0.35);
+      if (highlight?.has(n.stat.rel_path)) col.setHSL(0.075, 0.95, 0.55); // 橙色 = 可清理
+      else if (n.stat.name.startsWith("…其他")) col.setHSL(hue, 0.15, 0.35);
       else col.setHSL(hue, 0.7, 0.5 + 0.1 * Math.min(n.depth / MAX_DEPTH, 1));
       inst.setColorAt(i, col);
     });
@@ -267,7 +268,7 @@ export default function Tree3DView({ tree }: { tree: DirStat }) {
           tip.style.display = "block";
           tip.style.left = `${ev.clientX - rect.left + 14}px`;
           tip.style.top = `${ev.clientY - rect.top + 10}px`;
-          tip.textContent = `${n.stat.name} — ${humanSize(n.stat.total_size)} · ${n.stat.file_count} 文件${n.pruned > 0 ? `（另有 ${n.pruned} 个子项已折叠）` : ""}${n.stat.children.length > 0 ? "｜点击下钻" : ""}`;
+          tip.textContent = `${n.stat.name} — ${humanSize(n.stat.total_size)} · ${n.stat.file_count} 文件${highlight?.has(n.stat.rel_path) ? "｜★ 含可清理项" : ""}${n.pruned > 0 ? `（另有 ${n.pruned} 个子项已折叠）` : ""}${n.stat.children.length > 0 ? "｜点击下钻" : ""}`;
         }
         renderer.domElement.style.cursor = n.stat.children.length > 0 ? "pointer" : "grab";
       } else {
@@ -313,7 +314,7 @@ export default function Tree3DView({ tree }: { tree: DirStat }) {
       mount.removeChild(renderer.domElement);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focus]);
+  }, [focus, highlight]);
 
   return (
     <div>

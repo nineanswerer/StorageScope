@@ -33,7 +33,8 @@ function useDistrictHues(tree: DirStat) {
   }, [tree]);
 }
 
-function nodeColor(_node: DirStat, topName: string, hues: Map<string, number>, depth: number) {
+function nodeColor(node: DirStat, topName: string, hues: Map<string, number>, depth: number, highlight?: Set<string>) {
+  if (highlight?.has(node.rel_path)) return "#ff9f43"; // 橙色 = 可清理
   const hue = hues.get(topName) ?? 0.55;
   const c = new THREE.Color();
   c.setHSL(hue, 0.62, Math.min(0.72, 0.5 + depth * 0.045));
@@ -76,7 +77,7 @@ function arcPath(cx: number, cy: number, r0: number, r1: number, a0: number, a1:
   return `M${x0},${y0} A${r1},${r1} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${r0},${r0} 0 ${large} 0 ${x3},${y3} Z`;
 }
 
-function Sunburst({ root, hues, onDrill }: { root: DirStat; hues: Map<string, number>; onDrill: (n: DirStat) => void }) {
+function Sunburst({ root, hues, onDrill, highlight }: { root: DirStat; hues: Map<string, number>; onDrill: (n: DirStat) => void; highlight?: Set<string> }) {
   const S = 760, C = S / 2, R0 = 86, RING = 46, MAX_DEPTH = 6;
   const arcs: Arc[] = [];
 
@@ -120,7 +121,7 @@ function Sunburst({ root, hues, onDrill }: { root: DirStat; hues: Map<string, nu
         const flip = deg > 90 && deg < 270;
         return (
           <g key={arc.node.rel_path} onClick={() => arc.node.children.length > 0 && onDrill(arc.node)} style={{ cursor: arc.node.children.length ? "pointer" : "default" }}>
-            <path d={arcPath(C, C, r0, r1, arc.a0, arc.a1)} fill={nodeColor(arc.node, arc.topName, hues, arc.depth)} stroke="#0b0e14" strokeWidth="1">
+            <path d={arcPath(C, C, r0, r1, arc.a0, arc.a1)} fill={nodeColor(arc.node, arc.topName, hues, arc.depth, highlight)} stroke="#0b0e14" strokeWidth="1">
               <title>{`${arc.node.rel_path}\n${humanSize(arc.node.total_size)} · ${arc.node.file_count} 文件`}</title>
             </path>
             {showLabel && (
@@ -156,7 +157,7 @@ type Cell = {
   topName: string;
 };
 
-function Icicle({ root, hues, onDrill }: { root: DirStat; hues: Map<string, number>; onDrill: (n: DirStat) => void }) {
+function Icicle({ root, hues, onDrill, highlight }: { root: DirStat; hues: Map<string, number>; onDrill: (n: DirStat) => void; highlight?: Set<string> }) {
   const W = 1000, ROW = 30, MAX_DEPTH = 15;
   const cells: Cell[] = [];
 
@@ -195,7 +196,7 @@ function Icicle({ root, hues, onDrill }: { root: DirStat; hues: Map<string, numb
             y={40 + c.depth * ROW}
             width={Math.max(0.5, c.x1 - c.x0 - 1)}
             height={ROW - 2}
-            fill={nodeColor(c.node, c.topName, hues, c.depth)}
+            fill={nodeColor(c.node, c.topName, hues, c.depth, highlight)}
             stroke="#0b0e14"
             strokeWidth="0.5"
           >
@@ -216,7 +217,7 @@ function Icicle({ root, hues, onDrill }: { root: DirStat; hues: Map<string, numb
 // 容器：视图切换 + 面包屑
 // ---------------------------------------------------------------------------
 
-export default function HierarchyViews({ tree }: { tree: DirStat }) {
+export default function HierarchyViews({ tree, highlight }: { tree: DirStat; highlight?: Set<string> }) {
   const [mode, setMode] = useState<"sunburst" | "icicle">("sunburst");
   const [path, setPath] = useState<string[]>([]);
   const hues = useDistrictHues(tree);
@@ -256,9 +257,9 @@ export default function HierarchyViews({ tree }: { tree: DirStat }) {
         点击任意块下钻进入该目录；点面包屑返回上级。当前聚焦：{focus.rel_path}（{humanSize(focus.total_size)}）
       </div>
       {mode === "sunburst" ? (
-        <Sunburst root={focus} hues={hues} onDrill={(n) => setPath([...path, n.rel_path])} />
+        <Sunburst root={focus} hues={hues} onDrill={(n) => setPath([...path, n.rel_path])} highlight={highlight} />
       ) : (
-        <Icicle root={focus} hues={hues} onDrill={(n) => setPath([...path, n.rel_path])} />
+        <Icicle root={focus} hues={hues} onDrill={(n) => setPath([...path, n.rel_path])} highlight={highlight} />
       )}
     </div>
   );
