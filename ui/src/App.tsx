@@ -5,6 +5,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import CityView from "./CityView";
 import HierarchyViews from "./HierarchyViews";
 import Tree3DView from "./Tree3DView";
+import TrendChart from "./TrendChart";
 import "./App.css";
 
 type DirStat = {
@@ -32,6 +33,7 @@ type SnapshotMeta = {
   status: string;
   file_count: number;
   total_bytes: number;
+  recorded_at: number;
 };
 
 type FileChange = {
@@ -135,6 +137,17 @@ export default function App() {
   const [analysis, setAnalysis] = useState<AnalysisReport | null>(null);
   const [skipDupes, setSkipDupes] = useState(false);
   const [dupeMinMib, setDupeMinMib] = useState(1);
+  const [autoMinutes, setAutoMinutes] = useState(0); // M8：自动快照间隔（0 = 关闭）
+
+  // 自动快照：应用开着期间按间隔保存；正在扫描时跳过本轮
+  useEffect(() => {
+    if (autoMinutes <= 0 || !path || !db) return;
+    const t = setInterval(() => {
+      if (!scanning) void doSaveSnapshot();
+    }, autoMinutes * 60_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoMinutes, path, db, scanning]);
   const [viewMode, setViewMode] = useState<"list" | "hier" | "city" | "tree3d">("list");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [trashing, setTrashing] = useState(false);
@@ -416,6 +429,16 @@ export default function App() {
             扫描并保存快照
           </button>
           <button onClick={refreshSnapshots}>刷新列表</button>
+          <span style={{ flex: 1 }} />
+          <label className="check">
+            自动快照
+            <select value={autoMinutes} onChange={(e) => setAutoMinutes(Number(e.target.value))}>
+              <option value={0}>关闭</option>
+              <option value={15}>每 15 分钟</option>
+              <option value={60}>每小时</option>
+              <option value={360}>每 6 小时</option>
+            </select>
+          </label>
         </div>
         {snapshots.length > 0 && (
           <table>
@@ -441,6 +464,7 @@ export default function App() {
             </tbody>
           </table>
         )}
+        <TrendChart snapshots={snapshots.filter((s) => s.status === "complete")} />
       </section>
 
       <section className="card">
