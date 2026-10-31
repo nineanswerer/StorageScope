@@ -176,3 +176,21 @@ th {
   font-family: Consolas, monospace;
   font-size: 12px;
 }
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #bcc3cc;
+}
+
+.num {
+  width: 64px;
+}
+
+h3 {
+  font-size: 13px;
+  margin: 14px 0 6px;
+  color: #9ab;
+}

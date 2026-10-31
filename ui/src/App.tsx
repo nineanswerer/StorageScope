@@ -55,6 +55,29 @@ type DiffReport = {
 
 type Progress = { files: number; bytes: number; errors: number; current: string };
 
+type RuleHit = {
+  rule_id: string;
+  rule_name: string;
+  rel_path: string;
+  size: number;
+  file_count: number;
+  reason: string;
+  safety: "SafeToDelete" | "ReviewAdvised";
+};
+
+type DupeGroup = { size: number; hash: number; files: string[]; wasted: number };
+
+type AnalysisReport = {
+  cache_hits: RuleHit[];
+  big_files: { rel_path: string; name: string; size: number }[];
+  dupe_groups: DupeGroup[];
+  reclaimable_bytes: number;
+  hashed_bytes: number;
+  hash_errors: number;
+};
+
+type AnalyzeProgress = { done: number; total: number };
+
 function humanSize(bytes: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let v = bytes;
@@ -104,11 +127,20 @@ export default function App() {
   const [newId, setNewId] = useState<number | null>(null);
   const [report, setReport] = useState<DiffReport | null>(null);
   const [message, setMessage] = useState("");
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeProgress, setAnalyzeProgress] = useState<AnalyzeProgress | null>(null);
+  const [analysis, setAnalysis] = useState<AnalysisReport | null>(null);
+  const [skipDupes, setSkipDupes] = useState(false);
+  const [dupeMinMib, setDupeMinMib] = useState(1);
 
   useEffect(() => {
     const un = listen<Progress>("scan-progress", (e) => setProgress(e.payload));
+    const un2 = listen<AnalyzeProgress>("analyze-progress", (e) =>
+      setAnalyzeProgress(e.payload)
+    );
     return () => {
       un.then((f) => f());
+      un2.then((f) => f());
     };
   }, []);
 
@@ -169,6 +201,27 @@ export default function App() {
     } catch (e) {
       setMessage(String(e));
       setReport(null);
+    }
+  }
+
+  async function doAnalyze() {
+    if (!path) return;
+    setAnalyzing(true);
+    setMessage("");
+    setAnalysis(null);
+    setAnalyzeProgress(null);
+    try {
+      const r = await invoke<AnalysisReport>("analyze_cleanup", {
+        path,
+        top: 50,
+        dupeMinMib: dupeMinMib,
+        skipDupes,
+      });
+      setAnalysis(r);
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setAnalyzing(false);
     }
   }
 
@@ -336,6 +389,139 @@ export default function App() {
       </section>
 
       {message && <div className="message">{message}</div>}
+
+      <section className="card">
+        <h2>5. 清理建议</h2>
+        <div className="row">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={skipDupes}
+              onChange={(e) => setSkipDupes(e.target.checked)}
+            />
+            跳过重复文件检测（秒出，但不挖重复占的空间）
+          </label>
+          <label className="check">
+            重复检测最小体积
+            <input
+              className="num"
+              type="number"
+              min={1}
+              value={dupeMinMib}
+              onChange={(e) => setDupeMinMib(Number(e.target.value) || 1)}
+            />
+            MiB
+          </label>
+          {!analyzing ? (
+            <button className="primary" onClick={doAnalyze} disabled={!path}>
+              开始分析
+            </button>
+          ) : (
+            <button className="danger" onClick={() => invoke("cancel_scan")}>
+              取消
+            </button>
+          )}
+        </div>
+        {analyzing && (
+          <div className="progress">
+            {analyzeProgress
+              ? `哈希校验中：${analyzeProgress.done} / ${analyzeProgress.total} 个候选文件`
+              : progress
+                ? `扫描中：${progress.files} 个文件，${humanSize(progress.bytes)}`
+                : "正在启动…"}
+          </div>
+        )}
+        {analysis && (
+          <div>
+            <div className="summary">
+              估算可回收：<b>{humanSize(analysis.reclaimable_bytes)}</b>
+              （安全级缓存 + 重复冗余，为估算上限）
+              {!skipDupes &&
+                `；哈希校验读取 ${humanSize(analysis.hashed_bytes)}，失败 ${analysis.hash_errors} 个文件`}
+            </div>
+
+            <h3>缓存 / 可清理项（{analysis.cache_hits.length}）</h3>
+            {analysis.cache_hits.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>大小</th>
+                    <th>目录</th>
+                    <th>建议</th>
+                    <th>规则</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {analysis.cache_hits.slice(0, 30).map((h) => (
+                    <tr key={h.rel_path}>
+                      <td>{humanSize(h.size)}</td>
+                      <td className="mono">{h.rel_path}</td>
+                      <td>{h.safety === "SafeToDelete" ? "可安全清理" : "建议确认"}</td>
+                      <td title={h.reason}>{h.rule_name}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            <h3>大文件 Top {analysis.big_files.length}</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>大小</th>
+                  <th>文件</th>
+                </tr>
+              </thead>
+              <tbody>
+                {analysis.big_files.slice(0, 20).map((f) => (
+                  <tr key={f.rel_path}>
+                    <td>{humanSize(f.size)}</td>
+                    <td className="mono">{f.rel_path}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {!skipDupes && (
+              <>
+                <h3>重复文件组（{analysis.dupe_groups.length} 组）</h3>
+                {analysis.dupe_groups.length === 0 ? (
+                  <div className="summary">未发现内容完全相同的重复文件</div>
+                ) : (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>单份大小</th>
+                        <th>份数</th>
+                        <th>冗余</th>
+                        <th>路径（第一份保留，其余可删）</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {analysis.dupe_groups.slice(0, 20).map((g) => (
+                        <tr key={g.hash}>
+                          <td>{humanSize(g.size)}</td>
+                          <td>×{g.files.length}</td>
+                          <td>{humanSize(g.wasted)}</td>
+                          <td className="mono">
+                            {g.files.slice(0, 4).map((p) => (
+                              <div key={p}>{p}</div>
+                            ))}
+                            {g.files.length > 4 && <div>… 以及另外 {g.files.length - 4} 份</div>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {analysis.dupe_groups.length > 20 && (
+                  <div className="summary">仅显示前 20 组，共 {analysis.dupe_groups.length} 组</div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

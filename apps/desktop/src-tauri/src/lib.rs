@@ -114,6 +114,64 @@ async fn diff_snapshots(db: String, old: i64, new: i64) -> Result<DiffReport, St
     .map_err(|e| e.to_string())?
 }
 
+/// 清理分析（M3）：扫描 + 缓存识别 + 大文件 + 重复文件检测。
+/// 哈希阶段通过 analyze-progress 事件推送进度。
+#[tauri::command]
+async fn analyze_cleanup(
+    app: AppHandle,
+    state: State<'_, ScanCancel>,
+    path: String,
+    top: usize,
+    dupe_min_mib: u64,
+    skip_dupes: bool,
+) -> Result<serde_json::Value, String> {
+    let scanner = Scanner::new(ScanConfig {
+        follow_links: false,
+        progress_every: 500,
+    });
+    *state.0.lock().unwrap() = Some(scanner.cancel_handle());
+    tauri::async_runtime::spawn_blocking(move || {
+        let app2 = app.clone();
+        let outcome = scanner.scan(Path::new(&path), move |p, cur| {
+            let _ = app2.emit(
+                "scan-progress",
+                serde_json::json!({
+                    "files": p.files,
+                    "bytes": p.bytes,
+                    "errors": p.errors,
+                    "current": cur.display().to_string(),
+                }),
+            );
+        });
+        if outcome.cancelled {
+            return Err("扫描已取消：分析中止".into());
+        }
+        let tree = stats::aggregate(&outcome);
+        let app3 = app.clone();
+        let mut dupe_cb = move |done: u64, total: u64| {
+            let _ = app3.emit(
+                "analyze-progress",
+                serde_json::json!({ "done": done, "total": total }),
+            );
+        };
+        let report = if skip_dupes {
+            storagescope_core::rules::analyze_light(&outcome, &tree, top)
+        } else {
+            storagescope_core::rules::analyze(
+                Path::new(&path),
+                &outcome,
+                &tree,
+                top,
+                dupe_min_mib.max(1) * 1024 * 1024,
+                Some(&mut dupe_cb),
+            )
+        };
+        serde_json::to_value(report).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 导出统计树为 JSON 或 CSV。
 #[tauri::command]
 fn export_tree(tree: DirStat, path: String, format: String) -> Result<(), String> {
@@ -145,6 +203,7 @@ pub fn run() {
             save_snapshot,
             list_snapshots,
             diff_snapshots,
+            analyze_cleanup,
             export_tree,
             export_diff,
         ])

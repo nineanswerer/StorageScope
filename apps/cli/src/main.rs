@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use storagescope_core::rules::{self, DupeProgress};
 use storagescope_core::{diff as ssdiff, fixtures, scanner::Scanner, snapshot, stats, ScanConfig};
 
 #[derive(Parser)]
@@ -46,6 +47,22 @@ enum Cmd {
         db: PathBuf,
         old: i64,
         new: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 清理分析：缓存识别 + 大文件猎人 + 重复文件检测
+    Analyze {
+        path: PathBuf,
+        /// 大文件榜单长度
+        #[arg(long, default_value_t = 50)]
+        top: usize,
+        /// 重复文件检测的最小文件体积（MiB），小于此值的重复不追究
+        #[arg(long, default_value_t = 1)]
+        dupe_min_mib: u64,
+        /// 跳过重复文件检测（哈希需读文件内容，大目录较慢）
+        #[arg(long)]
+        no_dupes: bool,
+        /// 以 JSON 输出完整分析报告
         #[arg(long)]
         json: bool,
     },
@@ -325,6 +342,125 @@ fn main() {
                         c.rel_path,
                         c.old_size.map(|v| v.to_string()).unwrap_or("—".into()),
                         c.new_size.map(|v| v.to_string()).unwrap_or("—".into())
+                    );
+                }
+            }
+        }
+        Cmd::Analyze {
+            path,
+            top,
+            dupe_min_mib,
+            no_dupes,
+            json,
+        } => {
+            let scanner = Scanner::new(ScanConfig {
+                progress_every: 5000,
+                ..Default::default()
+            });
+            let cancel = scanner.cancel_handle();
+            ctrlc::set_handler(move || {
+                cancel.store(true, Ordering::Relaxed);
+            })
+            .expect("注册 Ctrl+C 处理器失败");
+
+            let outcome = scanner.scan(&path, |p, _| {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "… 扫描中：{} 个文件，{}",
+                    p.files,
+                    human_size(p.bytes)
+                );
+            });
+            if outcome.cancelled {
+                eprintln!("已取消：分析中止。");
+                std::process::exit(1);
+            }
+            let tree = stats::aggregate(&outcome);
+
+            let mut progress: Option<&mut DupeProgress> = if no_dupes {
+                None
+            } else {
+                Some(&mut |done, total| {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "… 哈希校验中：{done}/{total} 个候选文件"
+                    );
+                })
+            };
+            let report = if no_dupes {
+                rules::analyze_light(&outcome, &tree, top)
+            } else {
+                rules::analyze(
+                    &path,
+                    &outcome,
+                    &tree,
+                    top,
+                    dupe_min_mib * 1024 * 1024,
+                    progress.take(),
+                )
+            };
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else {
+                println!("═══ 缓存 / 可清理项 ═══");
+                if report.cache_hits.is_empty() {
+                    println!("（未命中任何内置规则）");
+                }
+                for h in &report.cache_hits {
+                    let tag = match h.safety {
+                        rules::Safety::SafeToDelete => "可安全清理",
+                        rules::Safety::ReviewAdvised => "建议确认",
+                    };
+                    println!(
+                        "  {:>12}  [{}] {}  ← {}（{}）",
+                        human_size(h.size),
+                        h.rel_path,
+                        tag,
+                        h.rule_name,
+                        h.reason
+                    );
+                }
+
+                println!("\n═══ 大文件 Top {} ═══", report.big_files.len());
+                for f in &report.big_files {
+                    println!("  {:>12}  {}", human_size(f.size), f.rel_path);
+                }
+
+                if !no_dupes {
+                    println!("\n═══ 重复文件组 ═══");
+                    if report.dupe_groups.is_empty() {
+                        println!("（未发现内容完全相同的重复文件）");
+                    }
+                    for g in report.dupe_groups.iter().take(20) {
+                        println!(
+                            "  {:>12}  ×{} 份（冗余 {}）",
+                            human_size(g.size),
+                            g.files.len(),
+                            human_size(g.wasted)
+                        );
+                        for p in g.files.iter().take(5) {
+                            println!("      - {p}");
+                        }
+                        if g.files.len() > 5 {
+                            println!("      … 以及另外 {} 份", g.files.len() - 5);
+                        }
+                    }
+                    if report.dupe_groups.len() > 20 {
+                        println!("  … 另有 {} 组，--json 查看全部", report.dupe_groups.len() - 20);
+                    }
+                }
+
+                println!();
+                println!(
+                    "估算可回收：{}（安全级缓存 + 重复冗余，为估算上限）",
+                    human_size(report.reclaimable_bytes)
+                );
+                if !no_dupes {
+                    println!(
+                        "哈希校验：读取 {}，失败 {} 个文件",
+                        human_size(report.hashed_bytes),
+                        report.hash_errors
                     );
                 }
             }
