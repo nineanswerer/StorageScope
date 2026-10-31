@@ -1,0 +1,10 @@
+//! StorageScope 核心库：只读目录扫描、聚合统计与合成测试数据。
+//! 不依赖任何桌面 UI，可独立通过 CLI 与自动化测试验证。
+
+pub mod fixtures;
+pub mod model;
+pub mod scanner;
+pub mod stats;
+
+pub use model::*;
+pub use scanner::{ScanConfig, Scanner};

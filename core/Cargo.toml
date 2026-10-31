@@ -1,0 +1,13 @@
+[package]
+name = "storagescope-core"
+description = "StorageScope 只读目录扫描核心库"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+jwalk = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
