@@ -179,13 +179,65 @@ const HEAD_SAMPLE: usize = 64 * 1024;
 pub const DEFAULT_DUPE_MIN_SIZE: u64 = 1024 * 1024;
 
 /// 重复文件检测进度回调参数：(已哈希文件数, 候选文件总数)。
-pub type DupeProgress<'a> = dyn FnMut(u64, u64) + 'a;
+pub type DupeProgress<'a> = dyn FnMut(u64, u64) + Send + 'a;
 
-pub fn find_duplicates(
+/// 并行哈希工作线程数：IO 密集型任务，8 线程在 NVMe 上实测收益明显。
+const HASH_WORKERS: usize = 8;
+
+/// 共享进度：原子计数 + 加锁回调（每 200 个文件触发一次）。
+struct SharedProgress<'a> {
+    done: std::sync::atomic::AtomicU64,
+    total: u64,
+    cb: std::sync::Mutex<Option<&'a mut DupeProgress<'a>>>,
+}
+impl<'a> SharedProgress<'a> {
+    fn tick(&self) {
+        let done = self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if done % 200 == 0 {
+            if let Some(cb) = self.cb.lock().unwrap().as_deref_mut() {
+                cb(done, self.total);
+            }
+        }
+    }
+}
+
+/// 用 scoped 线程池对文件逐个求哈希，保持输入顺序返回结果。
+/// 索引窃取（fetch_add）实现负载均衡：大文件线程不会被小文件线程等。
+fn par_hash<'a, F>(
+    files: &[&'a FileEntry],
+    progress: &SharedProgress,
+    hash_fn: F,
+) -> Vec<std::io::Result<u64>>
+where
+    F: Fn(&FileEntry) -> std::io::Result<u64> + Sync,
+{
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: Vec<std::sync::Mutex<Option<std::io::Result<u64>>>> =
+        files.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..HASH_WORKERS.min(files.len().max(1)) {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= files.len() {
+                    break;
+                }
+                let r = hash_fn(files[i]);
+                *results[i].lock().unwrap() = Some(r);
+                progress.tick();
+            });
+        }
+    });
+    results
+        .into_iter()
+        .map(|m| m.into_inner().unwrap().unwrap())
+        .collect()
+}
+
+pub fn find_duplicates<'a>(
     root: &Path,
     outcome: &ScanOutcome,
     min_size: u64,
-    mut on_progress: Option<&mut DupeProgress>,
+    on_progress: Option<&'a mut DupeProgress<'a>>,
 ) -> (Vec<DupeGroup>, u64, u64) {
     // 1. 按大小分组，只保留有重复嫌疑的组
     let mut by_size: HashMap<u64, Vec<&FileEntry>> = HashMap::new();
@@ -194,68 +246,62 @@ pub fn find_duplicates(
             by_size.entry(f.size).or_default().push(f);
         }
     }
-    let mut candidates: Vec<Vec<&FileEntry>> = by_size
+    let candidates: Vec<&FileEntry> = by_size
         .into_values()
         .filter(|g| g.len() >= 2)
+        .flatten()
         .collect();
-    let total_candidates: u64 = candidates.iter().map(|g| g.len() as u64).sum();
+    let total_candidates = candidates.len() as u64;
 
-    let mut hashed_files = 0u64;
+    let progress = SharedProgress {
+        done: std::sync::atomic::AtomicU64::new(0),
+        total: total_candidates * 2, // 头部 + 全文两个阶段
+        cb: std::sync::Mutex::new(on_progress),
+    };
     let mut hashed_bytes = 0u64;
     let mut hash_errors = 0u64;
 
-    // 2. 头部指纹二次分组
-    let mut head_groups: Vec<Vec<&FileEntry>> = Vec::new();
-    for group in candidates.drain(..) {
-        let mut by_head: HashMap<u64, Vec<&FileEntry>> = HashMap::new();
-        for f in group {
-            match head_fingerprint(root, f) {
-                Ok(h) => {
-                    hashed_bytes += f.size.min(HEAD_SAMPLE as u64);
-                    by_head.entry(h).or_default().push(f);
-                }
-                Err(_) => hash_errors += 1,
+    // 2. 头部指纹（并行），按 (大小, 指纹) 二次分组
+    let head_results = par_hash(&candidates, &progress, |f| head_fingerprint(root, f));
+    let mut by_head: HashMap<(u64, u64), Vec<&FileEntry>> = HashMap::new();
+    for (f, r) in candidates.iter().zip(head_results) {
+        match r {
+            Ok(h) => {
+                hashed_bytes += f.size.min(HEAD_SAMPLE as u64);
+                by_head.entry((f.size, h)).or_default().push(f);
             }
-            hashed_files += 1;
-            if let Some(cb) = on_progress.as_deref_mut() {
-                if hashed_files % 200 == 0 {
-                    cb(hashed_files, total_candidates);
-                }
-            }
+            Err(_) => hash_errors += 1,
         }
-        head_groups.extend(by_head.into_values().filter(|g| g.len() >= 2));
     }
+    let head_files: Vec<&FileEntry> = by_head
+        .into_values()
+        .filter(|g| g.len() >= 2)
+        .flatten()
+        .collect();
 
-    // 3. 全文哈希最终确认
-    let mut final_groups: Vec<DupeGroup> = Vec::new();
-    for group in head_groups {
-        let mut by_hash: HashMap<u64, Vec<String>> = HashMap::new();
-        for f in &group {
-            match full_hash(root, f) {
-                Ok(h) => {
-                    hashed_bytes += f.size;
-                    by_hash.entry(h).or_default().push(f.rel_path.clone());
-                }
-                Err(_) => hash_errors += 1,
+    // 3. 全文哈希（并行）最终确认，按 (大小, 全文哈希) 分组
+    let full_results = par_hash(&head_files, &progress, |f| full_hash(root, f));
+    let mut by_hash: HashMap<(u64, u64), Vec<String>> = HashMap::new();
+    for (f, r) in head_files.iter().zip(full_results) {
+        match r {
+            Ok(h) => {
+                hashed_bytes += f.size;
+                by_hash.entry((f.size, h)).or_default().push(f.rel_path.clone());
             }
-            hashed_files += 1;
-            if let Some(cb) = on_progress.as_deref_mut() {
-                if hashed_files % 200 == 0 {
-                    cb(hashed_files, total_candidates);
-                }
-            }
+            Err(_) => hash_errors += 1,
         }
-        for (hash, files) in by_hash {
-            if files.len() >= 2 {
-                let mut files = files;
-                files.sort();
-                final_groups.push(DupeGroup {
-                    size: group[0].size,
-                    hash,
-                    wasted: group[0].size * (files.len() as u64 - 1),
-                    files,
-                });
-            }
+    }
+    let mut final_groups: Vec<DupeGroup> = Vec::new();
+    for ((size, hash), files) in by_hash {
+        if files.len() >= 2 {
+            let mut files = files;
+            files.sort();
+            final_groups.push(DupeGroup {
+                size,
+                hash,
+                wasted: size * (files.len() as u64 - 1),
+                files,
+            });
         }
     }
     final_groups.sort_by(|a, b| b.wasted.cmp(&a.wasted));
@@ -263,13 +309,13 @@ pub fn find_duplicates(
 }
 
 /// 汇总入口：三类分析一次跑完。
-pub fn analyze(
+pub fn analyze<'a>(
     root: &Path,
     outcome: &ScanOutcome,
     tree: &DirStat,
     top_n_big: usize,
     dupe_min_size: u64,
-    on_dupe_progress: Option<&mut DupeProgress>,
+    on_dupe_progress: Option<&'a mut DupeProgress<'a>>,
 ) -> AnalysisReport {
     let cache_hits = find_cache_hits(tree);
     let big_files = find_big_files(outcome, top_n_big);
