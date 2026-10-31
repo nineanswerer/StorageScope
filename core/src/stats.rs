@@ -34,23 +34,30 @@ pub fn aggregate(outcome: &ScanOutcome) -> DirStat {
         *own_files.entry(parent).or_insert(0) += 1;
     }
 
-    // 3. 错误路径归一化为相对路径，便于判断某目录是否受影响。
+    // 3. 错误路径归一化为相对路径；并把每个错误路径及其全部祖先目录
+    //    记入受影响集合（O(错误数 × 深度)，替代逐节点前缀扫描）。
     let root_display = &outcome.root;
-    let rel_errors: Vec<String> = outcome
-        .errors
-        .iter()
-        .map(|e| {
-            std::path::Path::new(&e.path)
-                .strip_prefix(root_display)
-                .map(|r| {
-                    r.components()
-                        .map(|c| c.as_os_str().to_string_lossy())
-                        .collect::<Vec<_>>()
-                        .join("/")
-                })
-                .unwrap_or_else(|_| e.path.clone())
-        })
-        .collect();
+    let mut error_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in &outcome.errors {
+        let rel = std::path::Path::new(&e.path)
+            .strip_prefix(root_display)
+            .map(|r| {
+                r.components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or_else(|_| e.path.clone());
+        // 标记错误路径本身及其目录链上的每一级
+        let mut p = rel.clone();
+        loop {
+            error_dirs.insert(p.clone());
+            if p == "." {
+                break;
+            }
+            p = parent_of(&p).to_string();
+        }
+    }
 
     // 4. 自底向上聚合：按深度倒序处理，把子目录累计进父目录。
     let mut total_size: HashMap<String, u64> = own_size.clone();
@@ -66,30 +73,32 @@ pub fn aggregate(outcome: &ScanOutcome) -> DirStat {
         *total_files.entry(parent).or_insert(0) += c;
     }
 
-    // 5. 递归构建 DirStat 树。
-    fn build(
-        rel: &str,
+    // 5. 递归构建 DirStat 树。先一次性建父子邻接表（O(目录数)），
+    //    避免每个节点都全表扫描（39k 目录时全表扫描 ≈ 8 亿次比较）。
+    let mut children_of: HashMap<&str, Vec<(&String, &String)>> = HashMap::new();
+    for (p, n) in &dir_set {
+        children_of.entry(parent_of(p)).or_default().push((p, n));
+    }
+
+    fn build<'a>(
+        rel: &'a str,
         name: &str,
-        dir_set: &HashMap<String, String>,
+        children_of: &HashMap<&'a str, Vec<(&'a String, &'a String)>>,
         total_size: &HashMap<String, u64>,
         total_files: &HashMap<String, u64>,
-        rel_errors: &[String],
+        error_dirs: &std::collections::HashSet<String>,
     ) -> DirStat {
-        let mut children: Vec<DirStat> = dir_set
-            .iter()
-            .filter(|(p, _)| parent_of(p) == rel)
-            .map(|(p, n)| build(p, n, dir_set, total_size, total_files, rel_errors))
-            .collect();
+        let mut children: Vec<DirStat> = children_of
+            .get(rel)
+            .map(|v| {
+                v.iter()
+                    .map(|(p, n)| {
+                        build(p, n, children_of, total_size, total_files, error_dirs)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         children.sort_by(|a, b| b.total_size.cmp(&a.total_size).then(a.name.cmp(&b.name)));
-
-        let prefix = if rel == "." {
-            String::new()
-        } else {
-            format!("{rel}/")
-        };
-        let has_errors = rel_errors
-            .iter()
-            .any(|e| e == rel || (!prefix.is_empty() && e.starts_with(&prefix)));
 
         DirStat {
             rel_path: rel.to_string(),
@@ -97,7 +106,7 @@ pub fn aggregate(outcome: &ScanOutcome) -> DirStat {
             total_size: *total_size.get(rel).unwrap_or(&0),
             file_count: *total_files.get(rel).unwrap_or(&0),
             subdir_count: children.len() as u64,
-            has_errors,
+            has_errors: error_dirs.contains(rel),
             children,
         }
     }
@@ -110,9 +119,9 @@ pub fn aggregate(outcome: &ScanOutcome) -> DirStat {
     build(
         ".",
         &root_name,
-        &dir_set,
+        &children_of,
         &total_size,
         &total_files,
-        &rel_errors,
+        &error_dirs,
     )
 }
