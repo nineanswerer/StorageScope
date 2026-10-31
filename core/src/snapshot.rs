@@ -52,7 +52,7 @@ fn init_schema(conn: &Connection) -> DbResult<()> {
     )
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotMeta {
     pub id: i64,
     pub root: String,

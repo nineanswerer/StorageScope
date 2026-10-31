@@ -5,10 +5,10 @@ use crate::model::FileEntry;
 use crate::scanner::parent_of;
 use crate::snapshot::{self, SnapshotMeta};
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeKind {
     Added,
     Removed,
@@ -16,7 +16,7 @@ pub enum ChangeKind {
     Shrunk,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
     pub rel_path: String,
     pub kind: ChangeKind,
@@ -24,7 +24,7 @@ pub struct FileChange {
     pub new_size: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirChange {
     pub rel_path: String,
     pub added_bytes: i64,
@@ -33,7 +33,7 @@ pub struct DirChange {
     pub changed_files: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DiffSummary {
     pub added_files: u64,
     pub removed_files: u64,
@@ -44,7 +44,7 @@ pub struct DiffSummary {
     pub net_bytes: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DiffReport {
     pub old_id: i64,
     pub new_id: i64,

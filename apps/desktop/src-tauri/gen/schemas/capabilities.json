@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"默认能力：核心事件与对话框","local":true,"windows":["main"],"permissions":["core:default","core:event:default","dialog:default"]}}

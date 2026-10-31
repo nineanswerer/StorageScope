@@ -1,0 +1,178 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #14161a;
+  color: #e6e6e6;
+}
+
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+h1 {
+  font-size: 20px;
+  margin: 0 0 16px;
+}
+
+h2 {
+  font-size: 15px;
+  margin: 0 0 12px;
+  color: #9ab;
+}
+
+.card {
+  background: #1d2026;
+  border: 1px solid #2c313a;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+input,
+select {
+  flex: 1;
+  min-width: 180px;
+  background: #14161a;
+  border: 1px solid #3a4048;
+  border-radius: 6px;
+  color: #e6e6e6;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+button {
+  background: #2c313a;
+  border: 1px solid #3a4048;
+  border-radius: 6px;
+  color: #e6e6e6;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #383f4a;
+}
+
+button.primary {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+button.danger {
+  background: #b91c1c;
+  border-color: #b91c1c;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.progress {
+  font-size: 13px;
+  color: #7dd3fc;
+}
+
+.current {
+  color: #667;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary {
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+.warn {
+  color: #fbbf24;
+  font-size: 12px;
+}
+
+.message {
+  font-size: 13px;
+  color: #86efac;
+  padding: 8px;
+}
+
+.tree {
+  font-size: 13px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tree-row:hover {
+  background: #262b33;
+}
+
+.tree-toggle {
+  width: 14px;
+  color: #667;
+}
+
+.tree-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-count {
+  color: #889;
+  font-size: 12px;
+}
+
+.tree-size {
+  width: 90px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #2c313a;
+}
+
+th {
+  color: #9ab;
+  font-weight: 500;
+}
+
+.mono {
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
