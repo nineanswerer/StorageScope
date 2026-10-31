@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use storagescope_core::{fixtures, scanner::Scanner, stats, ScanConfig};
+use storagescope_core::{diff as ssdiff, fixtures, scanner::Scanner, snapshot, stats, ScanConfig};
 
 #[derive(Parser)]
 #[command(name = "ss", about = "StorageScope 命令行原型（M1）", version)]
@@ -33,6 +33,28 @@ enum Cmd {
         #[arg(long, default_value_t = 500)]
         files: usize,
     },
+    /// 快照管理
+    Snap {
+        #[command(subcommand)]
+        cmd: SnapCmd,
+    },
+    /// 比较两个同根目录快照
+    Diff {
+        #[arg(long)]
+        db: PathBuf,
+        old: i64,
+        new: i64,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SnapCmd {
+    /// 扫描目录并保存为快照（被取消的结果拒绝入库）
+    Save { path: PathBuf, #[arg(long)] db: PathBuf },
+    /// 列出全部快照
+    List { #[arg(long)] db: PathBuf },
 }
 
 fn human_size(bytes: u64) -> String {
@@ -156,6 +178,106 @@ fn main() {
                     for e in outcome.errors.iter().take(10) {
                         println!("  - [{:?}] {}：{}", e.category, e.path, e.message);
                     }
+                }
+            }
+        }
+        Cmd::Snap { cmd } => match cmd {
+            SnapCmd::Save { path, db } => {
+                let scanner = Scanner::new(ScanConfig::default());
+                let cancel = scanner.cancel_handle();
+                ctrlc::set_handler(move || {
+                    cancel.store(true, Ordering::Relaxed);
+                })
+                .expect("注册 Ctrl+C 处理器失败");
+                let outcome = scanner.scan(&path, |_, _| {});
+                if outcome.cancelled {
+                    eprintln!("已取消：快照未保存。取消的结果不完整，不得入库。");
+                    std::process::exit(1);
+                }
+                let conn = snapshot::open(&db).expect("打开快照数据库失败");
+                match snapshot::save(&conn, &outcome).expect("保存快照失败") {
+                    Some(id) => println!(
+                        "快照 #{id} 已保存：{} 个文件，{}，{}；状态 {}",
+                        outcome.file_count(),
+                        human_size(outcome.total_bytes()),
+                        db.display(),
+                        if outcome.errors.is_empty() {
+                            "完整"
+                        } else {
+                            "不完整（存在扫描异常）"
+                        }
+                    ),
+                    None => {
+                        eprintln!("快照未保存。");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            SnapCmd::List { db } => {
+                let conn = snapshot::open(&db).expect("打开快照数据库失败");
+                let snaps = snapshot::list(&conn).expect("读取快照列表失败");
+                if snaps.is_empty() {
+                    println!("（没有快照）");
+                }
+                for s in snaps {
+                    println!(
+                        "#{:<3} {}  {} 个文件  {}  [{}]",
+                        s.id,
+                        s.root,
+                        s.file_count,
+                        human_size(s.total_bytes as u64),
+                        s.status
+                    );
+                }
+            }
+        },
+        Cmd::Diff { db, old, new, json } => {
+            let conn = snapshot::open(&db).expect("打开快照数据库失败");
+            let report = match ssdiff::diff(&conn, old, new) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("无法比较：{e}");
+                    std::process::exit(2);
+                }
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else {
+                for w in &report.warnings {
+                    println!("⚠ {w}");
+                }
+                println!(
+                    "快照 #{old} → #{new}：新增 {} 文件（+{}），删除 {} 文件（-{}），增长 {}，缩减 {}；净变化 {}",
+                    report.summary.added_files,
+                    human_size(report.summary.added_bytes),
+                    report.summary.removed_files,
+                    human_size(report.summary.removed_bytes),
+                    report.summary.grown_files,
+                    report.summary.shrunk_files,
+                    report.summary.net_bytes
+                );
+                println!("\n变化最大的目录：");
+                for d in report.dirs.iter().take(10) {
+                    println!(
+                        "  {:>12}  {}（{} 个文件变化）",
+                        d.net_bytes, d.rel_path, d.changed_files
+                    );
+                }
+                println!("\n变化最大的文件：");
+                for c in report.files.iter().take(10) {
+                    let kind = match c.kind {
+                        ssdiff::ChangeKind::Added => "新增",
+                        ssdiff::ChangeKind::Removed => "删除",
+                        ssdiff::ChangeKind::Grown => "增长",
+                        ssdiff::ChangeKind::Shrunk => "缩减",
+                    };
+                    println!(
+                        "  [{}] {}（{} → {}）",
+                        kind,
+                        c.rel_path,
+                        c.old_size.map(|v| v.to_string()).unwrap_or("—".into()),
+                        c.new_size.map(|v| v.to_string()).unwrap_or("—".into())
+                    );
                 }
             }
         }
