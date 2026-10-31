@@ -192,6 +192,28 @@ fn export_diff(report: DiffReport, path: String, format: String) -> Result<(), S
     export::write_text(&PathBuf::from(path), &content).map_err(|e| e.to_string())
 }
 
+/// 清理执行（M5）：把扫描根目录下的相对路径移入系统回收站。
+/// 后端拼接绝对路径并校验目标必须仍在根目录内，防止路径逃逸。
+#[tauri::command]
+fn move_to_trash(root: String, rel_paths: Vec<String>) -> Result<serde_json::Value, String> {
+    let root_path = Path::new(&root)
+        .canonicalize()
+        .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
+    let mut abs = Vec::new();
+    for rel in &rel_paths {
+        let joined = root_path.join(rel);
+        let canonical = joined
+            .canonicalize()
+            .map_err(|e| format!("{rel}：无法解析（{e}），已中止本次清理"))?;
+        if !canonical.starts_with(&root_path) {
+            return Err(format!("{rel}：目标不在扫描根目录内，已拒绝"));
+        }
+        abs.push(canonical);
+    }
+    let report = storagescope_core::cleanup::move_to_trash(&abs);
+    serde_json::to_value(report).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -204,6 +226,7 @@ pub fn run() {
             list_snapshots,
             diff_snapshots,
             analyze_cleanup,
+            move_to_trash,
             export_tree,
             export_diff,
         ])

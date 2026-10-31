@@ -1,6 +1,6 @@
 [package]
 name = "storagescope-core"
-description = "StorageScope 只读目录扫描核心库"
+description = "StorageScope 目录扫描与清理核心库"
 version.workspace = true
 edition.workspace = true
 
@@ -8,6 +8,7 @@ edition.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+trash = "5"
 
 [dev-dependencies]
 tempfile = "3"

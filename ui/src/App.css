@@ -109,6 +109,7 @@ button:disabled {
   font-size: 13px;
   color: #86efac;
   padding: 8px;
+  white-space: pre-line;
 }
 
 .tree {

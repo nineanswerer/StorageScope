@@ -136,6 +136,83 @@ export default function App() {
   const [skipDupes, setSkipDupes] = useState(false);
   const [dupeMinMib, setDupeMinMib] = useState(1);
   const [viewMode, setViewMode] = useState<"list" | "hier" | "city" | "tree3d">("list");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [trashing, setTrashing] = useState(false);
+
+  type TrashReport = {
+    results: { path: string; ok: boolean; error: string | null }[];
+    succeeded: number;
+    failed: number;
+  };
+
+  function toggleOne(rel: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(rel)) next.delete(rel);
+      else next.add(rel);
+      return next;
+    });
+  }
+
+  function toggleDupeGroup(g: DupeGroup) {
+    const rest = g.files.slice(1);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const allIn = rest.every((p) => next.has(p));
+      for (const p of rest) {
+        if (allIn) next.delete(p);
+        else next.add(p);
+      }
+      return next;
+    });
+  }
+
+  function selectedBytes(): number {
+    if (!analysis) return 0;
+    let sum = 0;
+    for (const h of analysis.cache_hits) if (selected.has(h.rel_path)) sum += h.size;
+    for (const g of analysis.dupe_groups) {
+      for (const p of g.files.slice(1)) if (selected.has(p)) sum += g.size;
+    }
+    return sum;
+  }
+
+  async function doTrash() {
+    if (!analysis || selected.size === 0) return;
+    const n = selected.size;
+    if (!window.confirm(`确认把 ${n} 项（约 ${humanSize(selectedBytes())}）移入系统回收站？\n可在回收站中恢复。`)) return;
+    setTrashing(true);
+    setMessage("");
+    try {
+      const r = await invoke<TrashReport>("move_to_trash", { root: path, relPaths: [...selected] });
+      const gone = new Set(
+        r.results.filter((x) => x.ok).map((x) => x.path)
+      );
+      // 已删除的条目从分析结果里移除（用相对路径尾部匹配，规避绝对路径分隔符差异）
+      const isGone = (rel: string) =>
+        [...gone].some((p) => p.replace(/\\/g, "/").endsWith(rel.replace(/\\/g, "/")));
+      setAnalysis({
+        ...analysis,
+        cache_hits: analysis.cache_hits.filter((h) => !isGone(h.rel_path)),
+        dupe_groups: analysis.dupe_groups
+          .map((g) => ({ ...g, files: g.files.filter((p) => !isGone(p)) }))
+          .filter((g) => g.files.length > 1),
+      });
+      setSelected(new Set());
+      const failDetail = r.results
+        .filter((x) => !x.ok)
+        .slice(0, 5)
+        .map((x) => `${x.path}：${x.error}`)
+        .join("\n");
+      setMessage(
+        `已移入回收站 ${r.succeeded} 项${r.failed > 0 ? `，失败 ${r.failed} 项：\n${failDetail}` : "，可在系统回收站恢复"}`
+      );
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setTrashing(false);
+    }
+  }
 
   useEffect(() => {
     const un = listen<Progress>("scan-progress", (e) => setProgress(e.payload));
@@ -214,6 +291,7 @@ export default function App() {
     setMessage("");
     setAnalysis(null);
     setAnalyzeProgress(null);
+    setSelected(new Set());
     try {
       const r = await invoke<AnalysisReport>("analyze_cleanup", {
         path,
@@ -466,11 +544,25 @@ export default function App() {
                 `；哈希校验读取 ${humanSize(analysis.hashed_bytes)}，失败 ${analysis.hash_errors} 个文件`}
             </div>
 
+            <div className="row" style={{ alignItems: "center" }}>
+              <button
+                className="danger"
+                onClick={doTrash}
+                disabled={selected.size === 0 || trashing}
+              >
+                {trashing ? "正在移入回收站…" : `移入回收站（${selected.size} 项，约 ${humanSize(selectedBytes())}）`}
+              </button>
+              <span className="summary" style={{ margin: 0 }}>
+                勾选要清理的项；重复文件组始终保留第一份。走系统回收站，可恢复。
+              </span>
+            </div>
+
             <h3>缓存 / 可清理项（{analysis.cache_hits.length}）</h3>
             {analysis.cache_hits.length > 0 && (
               <table>
                 <thead>
                   <tr>
+                    <th></th>
                     <th>大小</th>
                     <th>目录</th>
                     <th>建议</th>
@@ -480,6 +572,13 @@ export default function App() {
                 <tbody>
                   {analysis.cache_hits.slice(0, 30).map((h) => (
                     <tr key={h.rel_path}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={selected.has(h.rel_path)}
+                          onChange={() => toggleOne(h.rel_path)}
+                        />
+                      </td>
                       <td>{humanSize(h.size)}</td>
                       <td className="mono">{h.rel_path}</td>
                       <td>{h.safety === "SafeToDelete" ? "可安全清理" : "建议确认"}</td>
@@ -517,15 +616,23 @@ export default function App() {
                   <table>
                     <thead>
                       <tr>
+                        <th></th>
                         <th>单份大小</th>
                         <th>份数</th>
                         <th>冗余</th>
-                        <th>路径（第一份保留，其余可删）</th>
+                        <th>路径（勾选 = 删除第一份以外的所有副本）</th>
                       </tr>
                     </thead>
                     <tbody>
                       {analysis.dupe_groups.slice(0, 20).map((g) => (
                         <tr key={g.hash}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={g.files.length > 1 && g.files.slice(1).every((p) => selected.has(p))}
+                              onChange={() => toggleDupeGroup(g)}
+                            />
+                          </td>
                           <td>{humanSize(g.size)}</td>
                           <td>×{g.files.length}</td>
                           <td>{humanSize(g.wasted)}</td>
