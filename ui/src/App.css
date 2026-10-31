@@ -194,3 +194,11 @@ h3 {
   margin: 14px 0 6px;
   color: #9ab;
 }
+
+.city-view {
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 10px;
+  border: 1px solid #2c313a;
+}

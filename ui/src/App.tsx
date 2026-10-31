@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import CityView from "./CityView";
 import "./App.css";
 
 type DirStat = {
@@ -132,6 +133,7 @@ export default function App() {
   const [analysis, setAnalysis] = useState<AnalysisReport | null>(null);
   const [skipDupes, setSkipDupes] = useState(false);
   const [dupeMinMib, setDupeMinMib] = useState(1);
+  const [showCity, setShowCity] = useState(false);
 
   useEffect(() => {
     const un = listen<Progress>("scan-progress", (e) => setProgress(e.payload));
@@ -282,7 +284,18 @@ export default function App() {
           <div className="row">
             <button onClick={() => exportTree("json")}>导出 JSON</button>
             <button onClick={() => exportTree("csv")}>导出 CSV</button>
+            <button onClick={() => setShowCity(!showCity)}>
+              {showCity ? "收起 3D 城市" : "3D 城市视图"}
+            </button>
           </div>
+          {showCity && (
+            <>
+              <div className="summary">
+                每栋楼 = 一个目录，楼高 ∝ 体积（对数刻度），同街区同色系。拖动旋转，滚轮缩放。
+              </div>
+              <CityView tree={tree} />
+            </>
+          )}
           <div className="tree">
             <TreeNode stat={tree} depth={0} />
           </div>
