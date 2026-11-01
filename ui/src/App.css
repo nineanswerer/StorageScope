@@ -1,76 +1,67 @@
-/* StorageScope · 夜间海图（Night Chart）
-   磁盘 = 海域；目录 = 海沟水深；可清理项 = 橙色暗礁。
-   深墨蓝底 + 磷光青测绘线 + 黄铜仪器刻度；面板以 1px 测绘缝线分隔，
-   不用卡片阴影；危险操作孤立摆放、平时描边、聚焦才实心。
-   动效只有一种语言：单轴缓出（expo ease-out）。 */
+/* StorageScope · Windows 磁盘空间管理工具
+   中性深色、紧凑信息层级、克制的蓝色操作色。
+   界面不使用主题隐喻、荧光、装饰性网格或浮动卡片。 */
 
 :root {
   color-scheme: dark;
 
-  /* 海域表面 */
-  --sea-0: #060d16;
-  --sea-1: #0a1420;
-  --sea-2: #0d1a29;
-  --sea-3: #122334;
-  --line: #16324a;
-  --line-strong: #23486a;
+  --surface-0: #121315;
+  --surface-1: #191b1e;
+  --surface-2: #202327;
+  --surface-3: #282c31;
+  --line: #30353b;
+  --line-strong: #454c54;
 
-  /* 文字 */
-  --ink: #e8f1f8;
-  --muted: #9fb4c6;
-  --faint: #6f8a9f;
+  --text: #e8eaed;
+  --muted: #a6adb5;
+  --faint: #808993;
 
-  /* 仪器 */
-  --cyan: #6fe0e8;
-  --cyan-hover: #96edf3;
-  --cyan-ink: #062028;
-  --brass: #c9a86a;
-  --hazard: #ff9f43;
-  --danger: #d1543f;
-  --success: #7fd8a4;
+  --accent: #8ea9c4;
+  --accent-hover: #a9bdd1;
+  --accent-ink: #121820;
+  --warning: #c79a62;
+  --danger: #cf7d72;
+  --success: #8eb59d;
 
-  --radius: 8px;
+  --radius: 3px;
 
   font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
   font-size: 14px;
 }
 
-/* ---- 浏览器默认表面 ---- */
+::selection { background: rgba(142, 169, 196, 0.28); color: var(--text); }
 
-::selection { background: rgba(111, 224, 232, 0.26); color: var(--ink); }
-
-* { scrollbar-width: thin; scrollbar-color: var(--line-strong) var(--sea-0); }
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) var(--surface-0); }
 *::-webkit-scrollbar { width: 10px; height: 10px; }
-*::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 5px; border: 2px solid var(--sea-0); }
-*::-webkit-scrollbar-track { background: var(--sea-0); }
+*::-webkit-scrollbar-thumb { background: var(--line-strong); border: 2px solid var(--surface-0); }
+*::-webkit-scrollbar-track { background: var(--surface-0); }
 
-:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
-input[type="checkbox"] { accent-color: var(--cyan); width: 15px; height: 15px; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
 
-/* ---- 海图桌骨架：左舷航海日志 + 右侧图面 ---- */
+body { margin: 0; background: var(--surface-0); color: var(--text); line-height: 1.55; }
 
-body { margin: 0; background: var(--sea-0); color: var(--ink); line-height: 1.55; }
-
+/* 桌面工具骨架：工作流导航 + 数据工作区。 */
 .shell { display: flex; min-height: 100vh; }
 
 .side {
-  width: 228px;
-  flex: 0 0 228px;
-  background: var(--sea-1);
+  width: 208px;
+  flex: 0 0 208px;
+  background: var(--surface-1);
   border-right: 1px solid var(--line);
-  padding: 22px 14px;
+  padding: 20px 12px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   position: sticky;
   top: 0;
   height: 100vh;
   box-sizing: border-box;
 }
 
-.brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 18px; }
-.brand-name { font-size: 16px; font-weight: 650; letter-spacing: 0.01em; }
-.brand-sub { font-size: 12px; color: var(--brass); letter-spacing: 0.14em; margin-top: 1px; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 22px; }
+.brand-name { font-size: 16px; font-weight: 600; letter-spacing: 0; }
+.brand-sub { font-size: 12px; color: var(--faint); margin-top: 1px; }
 
 .nav-leg {
   display: flex;
@@ -79,19 +70,20 @@ body { margin: 0; background: var(--sea-0); color: var(--ink); line-height: 1.55
   width: 100%;
   text-align: left;
   padding: 9px 10px;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
+  border: none;
+  border-left: 2px solid transparent;
+  border-radius: 0;
   background: none;
   color: var(--muted);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
-.nav-leg:hover { background: var(--sea-3); color: var(--ink); }
-.nav-leg.active { background: var(--sea-3); color: var(--cyan); border-color: var(--line); }
-.nav-leg .leg-no { font-family: Consolas, monospace; font-size: 12px; color: var(--brass); width: 18px; }
-.nav-leg.active .leg-no { color: var(--cyan); }
+.nav-leg:hover { background: var(--surface-2); color: var(--text); }
+.nav-leg.active { background: var(--surface-2); color: var(--text); border-left-color: var(--accent); }
+.nav-leg .leg-no { font-family: Consolas, monospace; font-size: 11px; color: var(--faint); width: 18px; }
+.nav-leg.active .leg-no { color: var(--accent); }
 
 .side-status {
   margin-top: auto;
@@ -102,145 +94,117 @@ body { margin: 0; background: var(--sea-0); color: var(--ink); line-height: 1.55
   line-height: 1.7;
   word-break: break-all;
 }
-.side-status b { color: var(--muted); font-weight: 500; }
+.side-status b { color: var(--muted); font-weight: 400; }
 
-.main { flex: 1; min-width: 0; padding: 26px 30px 60px; max-width: 1180px; }
+.main { flex: 1; min-width: 0; padding: 26px 30px 56px; }
+.page { min-width: 0; }
 
-/* 单轴缓出：切换航段时图面轻轻浮起 */
-.page { animation: rise 0.32s cubic-bezier(0.16, 1, 0.3, 1); }
-@keyframes rise {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+.page-title {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0;
+  margin: 0 0 4px;
 }
+.page-desc { font-size: 13px; color: var(--muted); margin: 0 0 24px; }
 
-.page-title { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 4px; }
-.page-desc { font-size: 13px; color: var(--muted); margin: 0 0 22px; }
+/* 工作区以分隔线组织，不把每组内容包成卡片。 */
+.panel { border-top: 1px solid var(--line); padding: 20px 0; margin-bottom: 20px; }
 
-/* ---- 图面分区：测绘缝线，不用卡片阴影 ---- */
+h2 { font-size: 16px; font-weight: 600; margin: 0 0 14px; color: var(--text); }
+h3 { font-size: 13px; font-weight: 600; margin: 24px 0 8px; color: var(--muted); letter-spacing: 0; }
 
-.panel {
-  background: var(--sea-2);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 20px;
-  margin-bottom: 20px;
-}
-
-h2 { font-size: 16px; font-weight: 600; margin: 0 0 14px; color: var(--ink); }
-h3 { font-size: 13px; font-weight: 600; margin: 20px 0 8px; color: var(--brass); letter-spacing: 0.04em; }
-
-.row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
-
-/* ---- 控件 ---- */
+.row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
 
 input, select {
   flex: 1;
   min-width: 180px;
-  background: var(--sea-0);
+  background: var(--surface-0);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
-  color: var(--ink);
-  padding: 8px 12px;
+  color: var(--text);
+  padding: 8px 11px;
   font-size: 13px;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.12s ease;
 }
 input::placeholder { color: var(--faint); }
 input:hover, select:hover { border-color: var(--faint); }
-input:focus, select:focus { border-color: var(--cyan); outline: none; }
+input:focus, select:focus { border-color: var(--accent); outline: none; }
 input:focus-visible, select:focus-visible { outline: none; }
 select { flex: 0 0 auto; min-width: 0; cursor: pointer; }
 
 button {
-  background: var(--sea-3);
+  background: var(--surface-2);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
-  color: var(--ink);
+  color: var(--text);
   padding: 8px 14px;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
-button:hover { background: #183050; border-color: var(--faint); }
+button:hover { background: var(--surface-3); border-color: var(--faint); }
 button:active { transform: translateY(1px); }
 
-button.primary { background: var(--cyan); border-color: var(--cyan); color: var(--cyan-ink); font-weight: 600; }
-button.primary:hover { background: var(--cyan-hover); border-color: var(--cyan-hover); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 
-/* 危险操作：平时描边，悬停/聚焦才实心；配合布局孤立摆放 */
 button.danger { background: transparent; border-color: var(--danger); color: var(--danger); }
-button.danger:hover, button.danger:focus-visible { background: var(--danger); color: #fff; border-color: var(--danger); }
+button.danger:hover, button.danger:focus-visible { background: var(--danger); color: #171313; border-color: var(--danger); }
 
-button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
-button:disabled:hover { background: var(--sea-3); border-color: var(--line-strong); color: var(--ink); }
-button.primary:disabled:hover { background: var(--cyan); border-color: var(--cyan); color: var(--cyan-ink); }
+button:disabled { opacity: 0.42; cursor: not-allowed; transform: none; }
+button:disabled:hover { background: var(--surface-2); border-color: var(--line-strong); color: var(--text); }
+button.primary:disabled:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 button.danger:disabled:hover { background: transparent; border-color: var(--danger); color: var(--danger); }
 
-/* 危险操作的隔离区：左右留足空白，远离其他按钮 */
-.danger-zone { display: flex; align-items: center; gap: 14px; padding: 12px 0 4px; }
+.danger-zone { display: flex; align-items: center; gap: 14px; padding: 16px 0 4px; }
 
-/* ---- 反馈与文案 ---- */
-
-.progress { font-size: 13px; color: var(--cyan); }
+.progress { font-size: 13px; color: var(--accent); }
 .current { color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .summary { font-size: 13px; color: var(--muted); margin: 10px 0; }
-.summary b { color: var(--ink); }
-.warn { color: var(--hazard); font-size: 12px; }
+.summary b { color: var(--text); }
+.warn { color: var(--warning); font-size: 12px; }
 .message { font-size: 13px; color: var(--success); padding: 4px 0 12px; white-space: pre-line; }
 
 .empty {
-  border: 1px dashed var(--line-strong);
-  border-radius: 10px;
-  padding: 36px 24px;
-  text-align: center;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 26px 0;
   color: var(--muted);
   font-size: 13px;
 }
-.empty b { color: var(--cyan); font-weight: 600; }
+.empty b { color: var(--text); font-weight: 600; }
 
-/* ---- 列表树 ---- */
-
-.tree { font-size: 13px; max-height: 460px; overflow: auto; border-radius: var(--radius); }
-.tree-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; transition: background-color 0.12s ease; }
-.tree-row:hover { background: var(--sea-3); }
+.tree { font-size: 13px; max-height: 520px; overflow: auto; }
+.tree-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; cursor: pointer; transition: background-color 0.12s ease; }
+.tree-row:hover { background: var(--surface-2); }
 .tree-toggle { width: 14px; color: var(--faint); }
 .tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-count { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .tree-size { width: 90px; text-align: right; font-variant-numeric: tabular-nums; }
 
-/* ---- 表格（海图测绘行） ---- */
-
 table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; font-variant-numeric: tabular-nums; }
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
-th { color: var(--brass); font-weight: 500; font-size: 12px; letter-spacing: 0.04em; }
+th { color: var(--muted); background: var(--surface-1); font-weight: 500; font-size: 12px; letter-spacing: 0; }
 tbody tr { transition: background-color 0.12s ease; }
-tbody tr:hover { background: var(--sea-3); }
-
-/* 差异行：新结果琥珀色闪现后归于平静（海图"注意新暗礁"） */
-@keyframes sounder {
-  0% { background: rgba(255, 159, 67, 0.22); }
-  100% { background: transparent; }
-}
-tr.sounder { animation: sounder 2.4s ease-out; }
+tbody tr:hover { background: var(--surface-2); }
 
 .mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
 .num { width: 64px; flex: 0 0 auto; min-width: 0; }
 
-/* ---- 可视化容器 ---- */
-
-.city-view { width: 100%; border-radius: var(--radius); overflow: hidden; margin-bottom: 10px; border: 1px solid var(--line); background: var(--sea-0); }
-.hier-svg { width: 100%; height: auto; background: var(--sea-0); border-radius: var(--radius); border: 1px solid var(--line); }
+.city-view { width: 100%; overflow: hidden; margin-bottom: 10px; border: 1px solid var(--line); background: var(--surface-0); }
+.hier-svg { width: 100%; height: auto; background: var(--surface-0); border: 1px solid var(--line); }
 
 .crumbs { font-size: 13px; color: var(--muted); margin-left: 10px; }
-.crumb { color: var(--cyan); cursor: pointer; text-decoration: none; text-underline-offset: 3px; }
+.crumb { color: var(--accent); cursor: pointer; text-decoration: none; text-underline-offset: 3px; }
 .crumb:hover { text-decoration: underline; }
 
 .tree3d-tooltip {
   position: absolute;
   z-index: 10;
-  background: rgba(6, 13, 22, 0.95);
-  color: var(--ink);
+  background: rgba(18, 19, 21, 0.96);
+  color: var(--text);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   padding: 6px 12px;
@@ -252,30 +216,27 @@ tr.sounder { animation: sounder 2.4s ease-out; }
   text-overflow: ellipsis;
 }
 
-/* ---- 打捞方案行动区（一键安全释放） ---- */
-
+/* 一键释放是结果与操作共用的横带，不是独立营销卡片。 */
 .action-panel {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px 20px;
-  background: var(--sea-1);
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  padding: 16px 18px;
-  margin: 12px 0 6px;
+  background: var(--surface-1);
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+  padding: 18px 0;
+  margin: 16px 0 6px;
 }
 .action-main { flex: 1; min-width: 220px; }
-.action-figure { font-size: 15px; color: var(--muted); }
-.action-figure b { color: var(--cyan); font-size: 22px; font-weight: 650; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.action-figure { font-size: 14px; color: var(--muted); }
+.action-figure b { color: var(--text); font-size: 24px; font-weight: 600; margin-left: 8px; font-variant-numeric: tabular-nums; }
 .action-sub { font-size: 12px; color: var(--faint); margin-top: 4px; }
 .action-btns { display: flex; gap: 10px; flex-wrap: wrap; }
 .action-note { flex-basis: 100%; font-size: 12px; color: var(--faint); }
 
-/* ---- 表格行内操作 ---- */
-
 .row-link {
-  color: var(--cyan);
+  color: var(--accent);
   font-size: 12px;
   cursor: pointer;
   text-decoration: none;

@@ -35,8 +35,8 @@ export default function TrendChart({ snapshots }: { snapshots: Point[] }) {
   return (
     <div>
       <div className="summary">
-        磁盘膨胀趋势：{pts.length} 个快照，{fmtTime(t0)} → {fmtTime(t1)}，净变化{" "}
-        <b style={{ color: net >= 0 ? "#ff9f43" : "#86efac" }}>
+        磁盘占用趋势：{pts.length} 个快照，{fmtTime(t0)} → {fmtTime(t1)}，净变化{" "}
+        <b style={{ color: net >= 0 ? "#c79a62" : "#8eb59d" }}>
           {net >= 0 ? "+" : ""}{humanSize(Math.abs(net))}
         </b>
       </div>
@@ -44,14 +44,14 @@ export default function TrendChart({ snapshots }: { snapshots: Point[] }) {
         {/* Y 轴网格与刻度 */}
         {[0, 0.5, 1].map((f) => (
           <g key={f}>
-            <line x1={PL} x2={W - PR} y1={y(maxB * f)} y2={y(maxB * f)} stroke="#22282f" />
-            <text x={PL - 8} y={y(maxB * f) + 4} textAnchor="end" fill="#9ab" fontSize="12">
+            <line x1={PL} x2={W - PR} y1={y(maxB * f)} y2={y(maxB * f)} stroke="#30353b" />
+            <text x={PL - 8} y={y(maxB * f) + 4} textAnchor="end" fill="#a6adb5" fontSize="12">
               {humanSize(maxB * f)}
             </text>
           </g>
         ))}
-        <path d={area} fill="rgba(127, 212, 255, 0.10)" />
-        <path d={line} fill="none" stroke="#7fd4ff" strokeWidth="2" />
+        <path d={area} fill="rgba(142, 169, 196, 0.10)" />
+        <path d={line} fill="none" stroke="#8ea9c4" strokeWidth="2" />
         {/* 段间净增减标注 */}
         {pts.slice(1).map((p, i) => {
           const prev = pts[i];
@@ -59,7 +59,7 @@ export default function TrendChart({ snapshots }: { snapshots: Point[] }) {
           const mx = (x(prev.recorded_at) + x(p.recorded_at)) / 2;
           const my = (y(prev.total_bytes) + y(p.total_bytes)) / 2 - 10;
           return (
-            <text key={p.id} x={mx} y={my} textAnchor="middle" fontSize="12" fill={d >= 0 ? "#ff9f43" : "#86efac"}>
+            <text key={p.id} x={mx} y={my} textAnchor="middle" fontSize="12" fill={d >= 0 ? "#c79a62" : "#8eb59d"}>
               {d >= 0 ? "+" : "−"}{humanSize(Math.abs(d))}
             </text>
           );
@@ -67,13 +67,13 @@ export default function TrendChart({ snapshots }: { snapshots: Point[] }) {
         {/* 数据点 */}
         {pts.map((p) => (
           <g key={p.id}>
-            <circle cx={x(p.recorded_at)} cy={y(p.total_bytes)} r={4.5} fill="#7fd4ff" stroke="#0b0e14" strokeWidth="1.5">
+            <circle cx={x(p.recorded_at)} cy={y(p.total_bytes)} r={4.5} fill="#8ea9c4" stroke="#121315" strokeWidth="1.5">
               <title>{`快照 #${p.id} · ${fmtTime(p.recorded_at)}\n${humanSize(p.total_bytes)} · ${p.file_count} 文件`}</title>
             </circle>
-            <text x={x(p.recorded_at)} y={H - 22} textAnchor="middle" fill="#9ab" fontSize="11">
+            <text x={x(p.recorded_at)} y={H - 22} textAnchor="middle" fill="#a6adb5" fontSize="11">
               {fmtTime(p.recorded_at)}
             </text>
-            <text x={x(p.recorded_at)} y={H - 8} textAnchor="middle" fill="#5a6a7a" fontSize="10">
+            <text x={x(p.recorded_at)} y={H - 8} textAnchor="middle" fill="#808993" fontSize="10">
               #{p.id}
             </text>
           </g>

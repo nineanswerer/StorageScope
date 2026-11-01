@@ -130,18 +130,14 @@ function TreeNode({ stat, depth }: { stat: DirStat; depth: number }) {
   );
 }
 
-/** 品牌标：立体树线稿（与 3D 树视图、应用图标同一语言） */
+/** 品牌标：磁盘与占用量线稿，直接表达工具用途。 */
 function BrandMark() {
   return (
-    <svg width="34" height="34" viewBox="0 0 34 34" fill="none" aria-hidden>
-      <rect x="1" y="1" width="32" height="32" rx="8" fill="#0d1a29" stroke="#23486a" />
-      <path d="M17 10v5m0 0-6 4m6-4 6 4M11 19l-3 6m3-6 3 6m9-6-3 6m3-6 3 6" stroke="#6fe0e8" strokeWidth="1.4" />
-      <circle cx="17" cy="8" r="2.6" fill="#6fe0e8" />
-      <circle cx="11" cy="19" r="2" fill="#6fe0e8" opacity="0.8" />
-      <circle cx="23" cy="19" r="2" fill="#6fe0e8" opacity="0.8" />
-      <rect x="6" y="24" width="4" height="4" rx="1" fill="#ff9f43" />
-      <rect x="15" y="24" width="4" height="4" rx="1" fill="#6fe0e8" opacity="0.65" />
-      <rect x="24" y="24" width="4" height="4" rx="1" fill="#6fe0e8" opacity="0.65" />
+    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden>
+      <path d="M6 6h20l2 14H4L6 6Z" stroke="#8ea9c4" strokeWidth="1.4" />
+      <path d="M4 20h24v6H4v-6Z" stroke="#8ea9c4" strokeWidth="1.4" />
+      <path d="M8 23h10" stroke="#8ea9c4" strokeWidth="2" />
+      <path d="M9 11h14" stroke="#808993" strokeWidth="1.2" />
     </svg>
   );
 }
@@ -315,7 +311,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoMinutes, path, db, scanning]);
 
-  // 进入快照/差异航段时自动刷新快照列表
+  // 进入快照/差异页面时自动刷新快照列表
   useEffect(() => {
     if (section === "snap" || section === "diff") void refreshSnapshots();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -435,7 +431,7 @@ export default function App() {
       const r = await invoke<{ outcome: ScanOutcome; tree: DirStat }>("scan_directory", { path });
       setOutcome(r.outcome);
       setTree(r.tree);
-      setSection("structure"); // 扫描完成直接进入海图
+      setSection("structure"); // 扫描完成直接进入目录结构
     } catch (e) {
       setMessage(String(e));
     } finally {
@@ -527,7 +523,7 @@ export default function App() {
           <BrandMark />
           <div>
             <div className="brand-name">StorageScope</div>
-            <div className="brand-sub">存储显微镜</div>
+            <div className="brand-sub">磁盘空间管理</div>
           </div>
         </div>
         {NAV.map((n) => (
@@ -548,10 +544,10 @@ export default function App() {
               {outcome.files.length} 个文件
               {tree && ` · ${humanSize(tree.total_size)}`}
               <br />
-              {snapshots.length} 个快照在册
+              {snapshots.length} 个快照
             </>
           ) : (
-            <>尚未测绘任何海域。
+            <>尚未扫描目录。
               <br />
               从 01 扫描目录开始。</>
           )}
@@ -562,7 +558,7 @@ export default function App() {
         {section === "scan" && (
           <div className="page" key="scan">
             <h1 className="page-title">扫描目录</h1>
-            <p className="page-desc">选定一片海域开始测绘：递归统计每个目录的体积与文件数。</p>
+            <p className="page-desc">选择要检查的目录，递归统计每个目录的空间占用与文件数。</p>
             <section className="panel">
               <div className="row">
                 <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="选择或输入目录路径，如 D:\mc" />
@@ -594,7 +590,7 @@ export default function App() {
             </section>
             {outcome && !scanning && (
               <div className="empty">
-                测绘完成。去 <b>02 目录结构</b> 看立体海图，或到 <b>05 清理建议</b> 打捞暗礁。
+                扫描完成。前往 <b>02 目录结构</b> 查看空间分布，或到 <b>05 清理建议</b> 分析可回收空间。
               </div>
             )}
           </div>
@@ -603,7 +599,7 @@ export default function App() {
         {section === "structure" && (
           <div className="page" key="structure">
             <h1 className="page-title">目录结构</h1>
-            <p className="page-desc">目录 = 海沟，体积 = 水深；橙色暗礁 = 含可清理项。</p>
+            <p className="page-desc">按目录查看空间占用；橙色标记表示包含可清理项。</p>
             {tree ? (
               <section className="panel" id="structure-card">
                 <div className="row">
@@ -638,7 +634,7 @@ export default function App() {
               </section>
             ) : (
               <div className="empty">
-                还没有数据。先到 <b>01 扫描目录</b> 完成一次测绘，这里会展开列表、层级图和 3D 立体树。
+                还没有数据。先到 <b>01 扫描目录</b> 完成一次扫描，这里会显示列表、层级图和 3D 立体树。
               </div>
             )}
           </div>
@@ -647,7 +643,7 @@ export default function App() {
         {section === "snap" && (
           <div className="page" key="snap">
             <h1 className="page-title">快照与趋势</h1>
-            <p className="page-desc">给海域留下坐标记录，看磁盘随时间的膨胀曲线。</p>
+            <p className="page-desc">保存目录快照，跟踪磁盘占用随时间的变化。</p>
             <section className="panel">
               <div className="row">
                 <input value={db} onChange={(e) => setDb(e.target.value)} placeholder="快照数据库路径" />
@@ -752,7 +748,7 @@ export default function App() {
                     </thead>
                     <tbody key={`${oldId}-${newId}`}>
                       {report.files.slice(0, 50).map((c) => (
-                        <tr key={c.rel_path} className="sounder">
+                        <tr key={c.rel_path}>
                           <td>{KIND_LABEL[c.kind]}</td>
                           <td className="mono">{c.rel_path}</td>
                           <td>{c.old_size == null ? "—" : humanSize(c.old_size)}</td>
@@ -763,7 +759,7 @@ export default function App() {
                   </table>
                 </div>
               ) : (
-                <div className="empty">选择两个快照后点"比较"。新出现的差异行会以琥珀色闪现提醒。</div>
+                <div className="empty">选择两个快照后点"比较"，结果按新增、删除、增长和缩减分类显示。</div>
               )}
             </section>
           </div>
@@ -772,7 +768,7 @@ export default function App() {
         {section === "clean" && (
           <div className="page" key="clean">
             <h1 className="page-title">清理建议</h1>
-            <p className="page-desc">打捞暗礁：缓存目录、大文件、重复副本。走系统回收站，可恢复。</p>
+            <p className="page-desc">分析缓存目录、大文件和重复副本；删除项进入系统回收站，可恢复。</p>
             <section className="panel">
               <div className="row">
                 <label className="check">
@@ -781,7 +777,7 @@ export default function App() {
                     checked={skipDupes}
                     onChange={(e) => setSkipDupes(e.target.checked)}
                   />
-                  跳过重复文件检测（秒出，但不挖重复占的空间）
+                  跳过重复文件检测（更快，但不会统计重复占用）
                 </label>
                 <label className="check">
                   重复检测最小体积
@@ -815,7 +811,7 @@ export default function App() {
               )}
               {!analysis && !analyzing && (
                 <div className="empty">
-                  在 01 设定扫描路径后点"开始分析"。分析完成后，橙色暗礁会同步标到 02 的 3D 树上。
+                  在 01 设定扫描路径后点"开始分析"。结果会同步标记到 02 的 3D 树中。
                 </div>
               )}
               {analysis && (

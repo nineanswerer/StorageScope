@@ -34,10 +34,10 @@ function useDistrictHues(tree: DirStat) {
 }
 
 function nodeColor(node: DirStat, topName: string, hues: Map<string, number>, depth: number, highlight?: Set<string>) {
-  if (highlight?.has(node.rel_path)) return "#ff9f43"; // 橙色 = 可清理
+  if (highlight?.has(node.rel_path)) return "#c78e50"; // 柔和橙色 = 可清理
   const hue = hues.get(topName) ?? 0.55;
   const c = new THREE.Color();
-  c.setHSL(hue, 0.62, Math.min(0.72, 0.5 + depth * 0.045));
+  c.setHSL(hue, 0.38, Math.min(0.66, 0.46 + depth * 0.04));
   return `#${c.getHexString()}`;
 }
 
@@ -104,11 +104,11 @@ function Sunburst({ root, hues, onDrill, highlight }: { root: DirStat; hues: Map
   return (
     <svg viewBox={`0 0 ${S} ${S}`} className="hier-svg">
       {/* 中心：点击返回上一级由面包屑处理；这里显示当前根 */}
-      <circle cx={C} cy={C} r={R0 - 6} fill="#0d1a29" stroke="#16324a" />
-      <text x={C} y={C - 8} textAnchor="middle" fill="#eaf6ff" fontSize="16" fontWeight="bold">
+      <circle cx={C} cy={C} r={R0 - 6} fill="#191b1e" stroke="#30353b" />
+      <text x={C} y={C - 8} textAnchor="middle" fill="#e8eaed" fontSize="16" fontWeight="bold">
         {root.name}
       </text>
-      <text x={C} y={C + 14} textAnchor="middle" fill="#7fd4ff" fontSize="13">
+      <text x={C} y={C + 14} textAnchor="middle" fill="#8ea9c4" fontSize="13">
         {humanSize(root.total_size)}
       </text>
       {arcs.map((arc) => {
@@ -185,8 +185,8 @@ function Icicle({ root, hues, onDrill, highlight }: { root: DirStat; hues: Map<s
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="hier-svg">
-      <rect x={0} y={0} width={W} height={36} rx={6} fill="#0d1a29" stroke="#16324a" />
-      <text x={12} y={23} fill="#eaf6ff" fontSize="14" fontWeight="bold">
+      <rect x={0} y={0} width={W} height={36} fill="#191b1e" stroke="#30353b" />
+      <text x={12} y={23} fill="#e8eaed" fontSize="14" fontWeight="bold">
         {root.name} · {humanSize(root.total_size)} · {root.file_count} 文件
       </text>
       {cells.map((c) => (

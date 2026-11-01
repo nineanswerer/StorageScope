@@ -168,8 +168,8 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
     mount.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x060d16);
-    scene.fog = new THREE.Fog(0x060d16, 500, 1600);
+    scene.background = new THREE.Color(0x121315);
+    scene.fog = new THREE.Fog(0x121315, 500, 1600);
 
     const { nodes, edges } = balloonLayout(focus);
     const maxLog = Math.max(...nodes.map((n) => Math.log10(1 + n.stat.total_size / 1e6)), 1);
@@ -194,14 +194,14 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
       resumeTimer = setTimeout(() => (controls.autoRotate = true), 3000);
     });
 
-    scene.add(new THREE.HemisphereLight(0x3a5a8c, 0x0a0c12, 1.1));
-    const key = new THREE.DirectionalLight(0x9fc0ff, 1.2);
+    scene.add(new THREE.HemisphereLight(0x8b939c, 0x171819, 1.0));
+    const key = new THREE.DirectionalLight(0xdde3e8, 1.1);
     key.position.set(200, 400, 150);
     scene.add(key);
 
-    const grid = new THREE.GridHelper(Math.max(840, extent * 2.6), 42, 0x2a5a8c, 0x14283f);
+    const grid = new THREE.GridHelper(Math.max(840, extent * 2.6), 42, 0x454c54, 0x282c31);
     (grid.material as THREE.LineBasicMaterial).transparent = true;
-    (grid.material as THREE.LineBasicMaterial).opacity = 0.35;
+    (grid.material as THREE.LineBasicMaterial).opacity = 0.25;
     grid.position.y = -MAX_DEPTH * LAYER_DROP - 8;
     scene.add(grid);
 
@@ -212,16 +212,16 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
     });
     const edgeGeo = new THREE.BufferGeometry();
     edgeGeo.setAttribute("position", new THREE.BufferAttribute(edgePos, 3));
-    const edgeMat = new THREE.LineBasicMaterial({ color: 0x3d6a9c, transparent: true, opacity: 0.5 });
+    const edgeMat = new THREE.LineBasicMaterial({ color: 0x69727c, transparent: true, opacity: 0.45 });
     scene.add(new THREE.LineSegments(edgeGeo, edgeMat));
 
-    // 节点材质（共享）：instanceColor 同时驱动漫反射与自发光
+    // 节点材质（共享）：以漫反射为主，仅保留少量自发光避免暗部丢失。
     const nodeMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.3,
-      metalness: 0.15,
+      roughness: 0.72,
+      metalness: 0.05,
       emissive: 0xffffff,
-      emissiveIntensity: 0.35,
+      emissiveIntensity: 0.06,
     });
     nodeMat.onBeforeCompile = (shader) => {
       shader.fragmentShader = shader.fragmentShader.replace(
@@ -251,9 +251,9 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
     const colorOf = (n: LayoutNode) => {
       const col = new THREE.Color();
       const hue = hues.get(n.topName) ?? 0.55;
-      if (highlight?.has(n.stat.rel_path)) col.setHSL(0.075, 0.95, 0.55); // 橙 = 可清理
-      else if (n.stat.name.startsWith("…其他")) col.setHSL(hue, 0.15, 0.35);
-      else col.setHSL(hue, 0.7, 0.5 + 0.1 * Math.min(n.depth / MAX_DEPTH, 1));
+      if (highlight?.has(n.stat.rel_path)) col.setHSL(0.075, 0.72, 0.52); // 柔和橙 = 可清理
+      else if (n.stat.name.startsWith("…其他")) col.setHSL(hue, 0.1, 0.35);
+      else col.setHSL(hue, 0.42, 0.46 + 0.08 * Math.min(n.depth / MAX_DEPTH, 1));
       return col;
     };
 
