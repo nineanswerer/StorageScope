@@ -85,5 +85,7 @@ pub struct DirStat {
     pub subdir_count: u64,
     /// 本目录或其后代存在扫描异常，统计可能不完整。
     pub has_errors: bool,
+    /// 各内容类型及其后代的逻辑大小，用于目录类型徽章。
+    pub type_sizes: std::collections::BTreeMap<String, u64>,
     pub children: Vec<DirStat>,
 }

@@ -16,6 +16,7 @@ type DirStat = {
   file_count: number;
   subdir_count: number;
   has_errors: boolean;
+  type_sizes: Record<string, number>;
   children: DirStat[];
 };
 
@@ -134,10 +135,11 @@ function TreeNode({ stat, depth }: { stat: DirStat; depth: number }) {
   return (
     <div className="tree-node">
       <div
-        className="tree-row"
+        className={`tree-row${hasChildren ? " is-expandable" : ""}${open_ ? " is-open" : ""}`}
         role={hasChildren ? "button" : undefined}
         tabIndex={hasChildren ? 0 : undefined}
         aria-expanded={hasChildren ? open_ : undefined}
+        aria-label={hasChildren ? `${open_ ? "收起" : "展开"} ${stat.name}，${stat.file_count} 个文件，${humanSize(stat.total_size)}` : undefined}
         onClick={() => hasChildren && setOpen(!open_)}
         onKeyDown={(event) => {
           if (hasChildren && (event.key === "Enter" || event.key === " ")) {
@@ -146,16 +148,37 @@ function TreeNode({ stat, depth }: { stat: DirStat; depth: number }) {
           }
         }}
       >
-        <span className="tree-toggle" aria-hidden>{hasChildren ? (open_ ? "▾" : "▸") : "·"}</span>
+        <span className={`tree-toggle${open_ ? " is-open" : ""}`} aria-hidden>
+          {hasChildren && (
+            <svg viewBox="0 0 16 16" fill="none">
+              <path d="m6 4 4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+        </span>
+        <span className={`tree-folder${open_ ? " is-open" : ""}`} aria-hidden>
+          <svg viewBox="0 0 20 20" fill="none">
+            {open_ ? (
+              <>
+                <path d="M2.5 6.5V5.2c0-.7.5-1.2 1.2-1.2h4l1.8 2h6.8c.7 0 1.2.5 1.2 1.2v1.3" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                <path d="m3.2 8.5 1 6.2c.1.7.6 1.1 1.3 1.1h9.7c.6 0 1.1-.4 1.3-1l1.4-5.2c.2-.8-.4-1.6-1.3-1.6H4.4c-.5 0-1 .2-1.2.5Z" fill="currentColor" fillOpacity=".16" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+              </>
+            ) : (
+              <path d="M2.8 6.8V5.3c0-.8.5-1.3 1.3-1.3h4l1.8 2h6.8c.7 0 1.3.5 1.3 1.3v7.5c0 .8-.6 1.2-1.3 1.2H3.8c-.7 0-1-.5-1-1.2V6.8Z" fill="currentColor" fillOpacity=".12" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+            )}
+          </svg>
+        </span>
         <span className="tree-name">
           {stat.name}
-          {stat.has_errors && <span className="warn"> ⚠ 统计可能不完整</span>}
+          {stat.has_errors && <span className="warn">（统计可能不完整）</span>}
         </span>
         <span className="tree-count">{stat.file_count} 文件</span>
         <span className="tree-size">{humanSize(stat.total_size)}</span>
       </div>
-      {open_ &&
-        stat.children.map((c) => <TreeNode key={c.rel_path} stat={c} depth={depth + 1} />)}
+      {open_ && hasChildren && (
+        <div className="tree-children">
+          {stat.children.map((c) => <TreeNode key={c.rel_path} stat={c} depth={depth + 1} />)}
+        </div>
+      )}
     </div>
   );
 }

@@ -173,13 +173,25 @@ button.danger:disabled:hover { background: transparent; border-color: var(--dang
 }
 .empty b { color: var(--text); font-weight: 600; }
 
-.tree { font-size: 13px; max-height: 520px; overflow: auto; }
-.tree-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; cursor: pointer; transition: background-color 0.12s ease; }
+.tree { font-size: 13px; max-height: 520px; overflow: auto; padding: 4px 0 8px; }
+.tree-row { position: relative; display: flex; align-items: center; gap: 8px; min-height: 34px; box-sizing: border-box; padding: 4px 8px 4px 4px; transition: background-color 0.15s ease, color 0.15s ease; }
+.tree-row.is-expandable { cursor: pointer; }
 .tree-row:hover { background: var(--surface-2); }
-.tree-toggle { width: 14px; color: var(--faint); }
+.tree-row.is-open { background: rgba(142, 169, 196, 0.07); }
+.tree-toggle { display: grid; place-items: center; flex: 0 0 16px; width: 16px; height: 16px; color: var(--faint); }
+.tree-toggle svg { width: 16px; height: 16px; transition: transform 0.15s ease; }
+.tree-toggle.is-open { color: var(--accent); }
+.tree-toggle.is-open svg { transform: rotate(90deg); }
+.tree-folder { display: grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; color: var(--muted); }
+.tree-folder svg { width: 20px; height: 20px; }
+.tree-folder.is-open { color: var(--accent); }
 .tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-row.is-open > .tree-name { color: var(--text); font-weight: 600; }
 .tree-count { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .tree-size { width: 90px; text-align: right; font-variant-numeric: tabular-nums; }
+.tree-children { margin-left: 11px; padding-left: 12px; border-left: 1px solid var(--line-strong); animation: tree-children-in 0.15s ease-out; }
+.tree-children > .tree-node > .tree-row::before { content: ""; position: absolute; left: -13px; top: 50%; width: 9px; border-top: 1px solid var(--line-strong); }
+@keyframes tree-children-in { from { opacity: 0.65; transform: translateY(-2px); } to { opacity: 1; transform: translateY(0); } }
 
 table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; font-variant-numeric: tabular-nums; }
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
@@ -194,9 +206,15 @@ tbody tr:hover { background: var(--surface-2); }
 .city-view { width: 100%; overflow: hidden; margin-bottom: 10px; border: 1px solid var(--line); background: var(--surface-0); }
 .hier-svg { width: 100%; height: auto; background: var(--surface-0); border: 1px solid var(--line); }
 
-.crumbs { font-size: 13px; color: var(--muted); margin-left: 10px; }
-.crumb { color: var(--accent); cursor: pointer; text-decoration: none; text-underline-offset: 3px; }
-.crumb:hover { text-decoration: underline; }
+.tree3d { min-width: 0; }
+.tree3d-toolbar { justify-content: space-between; gap: 12px; }
+.tree3d-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.tree3d-actions button { padding: 5px 10px; font-size: 12px; }
+.tree3d canvas { display: block; max-width: 100%; }
+.tree3d canvas:focus-visible { outline-offset: -2px; }
+.crumbs { font-size: 13px; color: var(--muted); }
+.crumb { background: none; border: 0; border-radius: 0; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: none; text-underline-offset: 3px; }
+.crumb:hover { background: none; border: 0; color: var(--accent-hover); text-decoration: underline; }
 
 .tree3d-tooltip {
   position: absolute;
@@ -209,7 +227,7 @@ tbody tr:hover { background: var(--surface-2); }
   font-size: 12px;
   pointer-events: none;
   white-space: nowrap;
-  max-width: 420px;
+  max-width: min(420px, calc(100% - 16px));
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -426,5 +444,5 @@ td.mono { overflow-wrap: anywhere; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  * { scroll-behavior: auto !important; transition: none !important; }
+  * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
