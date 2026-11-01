@@ -83,6 +83,16 @@ type AnalysisReport = {
 
 type AnalyzeProgress = { done: number; total: number };
 
+type Section = "scan" | "structure" | "snap" | "diff" | "clean";
+
+const NAV: { id: Section; no: string; label: string }[] = [
+  { id: "scan", no: "01", label: "扫描目录" },
+  { id: "structure", no: "02", label: "目录结构" },
+  { id: "snap", no: "03", label: "快照与趋势" },
+  { id: "diff", no: "04", label: "差异比较" },
+  { id: "clean", no: "05", label: "清理建议" },
+];
+
 function humanSize(bytes: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let v = bytes;
@@ -120,7 +130,24 @@ function TreeNode({ stat, depth }: { stat: DirStat; depth: number }) {
   );
 }
 
+/** 品牌标：立体树线稿（与 3D 树视图、应用图标同一语言） */
+function BrandMark() {
+  return (
+    <svg width="34" height="34" viewBox="0 0 34 34" fill="none" aria-hidden>
+      <rect x="1" y="1" width="32" height="32" rx="8" fill="#0d1a29" stroke="#23486a" />
+      <path d="M17 10v5m0 0-6 4m6-4 6 4M11 19l-3 6m3-6 3 6m9-6-3 6m3-6 3 6" stroke="#6fe0e8" strokeWidth="1.4" />
+      <circle cx="17" cy="8" r="2.6" fill="#6fe0e8" />
+      <circle cx="11" cy="19" r="2" fill="#6fe0e8" opacity="0.8" />
+      <circle cx="23" cy="19" r="2" fill="#6fe0e8" opacity="0.8" />
+      <rect x="6" y="24" width="4" height="4" rx="1" fill="#ff9f43" />
+      <rect x="15" y="24" width="4" height="4" rx="1" fill="#6fe0e8" opacity="0.65" />
+      <rect x="24" y="24" width="4" height="4" rx="1" fill="#6fe0e8" opacity="0.65" />
+    </svg>
+  );
+}
+
 export default function App() {
+  const [section, setSection] = useState<Section>("scan");
   const [path, setPath] = useState("");
   const [db, setDb] = useState("storagescope-snapshots.db");
   const [scanning, setScanning] = useState(false);
@@ -137,7 +164,10 @@ export default function App() {
   const [analysis, setAnalysis] = useState<AnalysisReport | null>(null);
   const [skipDupes, setSkipDupes] = useState(false);
   const [dupeMinMib, setDupeMinMib] = useState(1);
-  const [autoMinutes, setAutoMinutes] = useState(0); // M8：自动快照间隔（0 = 关闭）
+  const [autoMinutes, setAutoMinutes] = useState(0);
+  const [viewMode, setViewMode] = useState<"list" | "hier" | "city" | "tree3d">("list");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [trashing, setTrashing] = useState(false);
 
   // 自动快照：应用开着期间按间隔保存；正在扫描时跳过本轮
   useEffect(() => {
@@ -148,9 +178,12 @@ export default function App() {
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoMinutes, path, db, scanning]);
-  const [viewMode, setViewMode] = useState<"list" | "hier" | "city" | "tree3d">("list");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [trashing, setTrashing] = useState(false);
+
+  // 进入快照/差异航段时自动刷新快照列表
+  useEffect(() => {
+    if (section === "snap" || section === "diff") void refreshSnapshots();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section]);
 
   // M7 视图联动：可清理目录集合 = 缓存命中目录 + 含重复文件的目录
   const cleanableDirs = useMemo(() => {
@@ -213,10 +246,7 @@ export default function App() {
     setMessage("");
     try {
       const r = await invoke<TrashReport>("move_to_trash", { root: path, relPaths: [...selected] });
-      const gone = new Set(
-        r.results.filter((x) => x.ok).map((x) => x.path)
-      );
-      // 已删除的条目从分析结果里移除（用相对路径尾部匹配，规避绝对路径分隔符差异）
+      const gone = new Set(r.results.filter((x) => x.ok).map((x) => x.path));
       const isGone = (rel: string) =>
         [...gone].some((p) => p.replace(/\\/g, "/").endsWith(rel.replace(/\\/g, "/")));
       setAnalysis({
@@ -267,6 +297,7 @@ export default function App() {
       const r = await invoke<{ outcome: ScanOutcome; tree: DirStat }>("scan_directory", { path });
       setOutcome(r.outcome);
       setTree(r.tree);
+      setSection("structure"); // 扫描完成直接进入海图
     } catch (e) {
       setMessage(String(e));
     } finally {
@@ -352,359 +383,439 @@ export default function App() {
   }
 
   return (
-    <div className="app">
-      <h1>StorageScope 存储显微镜</h1>
-
-      <section className="card">
-        <h2>1. 扫描目录</h2>
-        <div className="row">
-          <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="选择或输入目录路径" />
-          <button onClick={pickDir}>浏览…</button>
-          {!scanning ? (
-            <button className="primary" onClick={doScan} disabled={!path}>
-              开始扫描
-            </button>
-          ) : (
-            <button className="danger" onClick={() => invoke("cancel_scan")}>
-              取消
-            </button>
-          )}
-        </div>
-        {scanning && progress && (
-          <div className="progress">
-            已扫描 {progress.files} 个文件，{humanSize(progress.bytes)}
-            {progress.errors > 0 && `，${progress.errors} 条异常`}
-            <div className="current">{progress.current}</div>
-          </div>
-        )}
-        {outcome && !scanning && (
-          <div className="summary">
-            {outcome.cancelled ? "⚠ 扫描被取消，结果不完整" : "扫描完成"}：
-            {outcome.files.length} 个文件，耗时 {outcome.duration_ms} ms
-            {outcome.errors.length > 0 && `，${outcome.errors.length} 条异常`}
-          </div>
-        )}
-      </section>
-
-      {tree && (
-        <section className="card" id="structure-card">
-          <h2>2. 目录结构</h2>
-          <div className="row">
-            <button className={viewMode === "list" ? "primary" : ""} onClick={() => setViewMode("list")}>
-              列表
-            </button>
-            <button className={viewMode === "hier" ? "primary" : ""} onClick={() => setViewMode("hier")}>
-              层级图
-            </button>
-            <button className={viewMode === "tree3d" ? "primary" : ""} onClick={() => setViewMode("tree3d")}>
-              3D 树
-            </button>
-            <span style={{ flex: 1 }} />
-            <button onClick={() => exportTree("json")}>导出 JSON</button>
-            <button onClick={() => exportTree("csv")}>导出 CSV</button>
-          </div>
-          {viewMode === "tree3d" && <Tree3DView tree={tree} highlight={cleanableDirs} />}
-          {viewMode === "hier" && <HierarchyViews tree={tree} highlight={cleanableDirs} />}
-          {viewMode === "city" && (
-            <>
-              <div className="summary">
-                每栋楼 = 一个目录，楼高 ∝ 体积（对数刻度），同街区同色系。拖动旋转，滚轮缩放。
-              </div>
-              <CityView tree={tree} />
-            </>
-          )}
-          {viewMode === "list" && (
-            <div className="tree">
-              <TreeNode stat={tree} depth={0} />
-            </div>
-          )}
-        </section>
-      )}
-
-      <section className="card">
-        <h2>3. 快照</h2>
-        <div className="row">
-          <input value={db} onChange={(e) => setDb(e.target.value)} placeholder="快照数据库路径" />
-          <button onClick={doSaveSnapshot} disabled={!path || scanning}>
-            扫描并保存快照
-          </button>
-          <button onClick={refreshSnapshots}>刷新列表</button>
-          <span style={{ flex: 1 }} />
-          <label className="check">
-            自动快照
-            <select value={autoMinutes} onChange={(e) => setAutoMinutes(Number(e.target.value))}>
-              <option value={0}>关闭</option>
-              <option value={15}>每 15 分钟</option>
-              <option value={60}>每小时</option>
-              <option value={360}>每 6 小时</option>
-            </select>
-          </label>
-        </div>
-        {snapshots.length > 0 && (
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>根目录</th>
-                <th>文件数</th>
-                <th>大小</th>
-                <th>状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              {snapshots.map((s) => (
-                <tr key={s.id}>
-                  <td>#{s.id}</td>
-                  <td className="mono">{s.root}</td>
-                  <td>{s.file_count}</td>
-                  <td>{humanSize(s.total_bytes)}</td>
-                  <td>{s.status === "complete" ? "完整" : "⚠ 不完整"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        <TrendChart snapshots={snapshots.filter((s) => s.status === "complete")} />
-      </section>
-
-      <section className="card">
-        <h2>4. 差异比较</h2>
-        <div className="row">
-          <select value={oldId ?? ""} onChange={(e) => setOldId(Number(e.target.value) || null)}>
-            <option value="">旧快照…</option>
-            {snapshots.map((s) => (
-              <option key={s.id} value={s.id}>
-                #{s.id}（{s.file_count} 文件）
-              </option>
-            ))}
-          </select>
-          <select value={newId ?? ""} onChange={(e) => setNewId(Number(e.target.value) || null)}>
-            <option value="">新快照…</option>
-            {snapshots.map((s) => (
-              <option key={s.id} value={s.id}>
-                #{s.id}（{s.file_count} 文件）
-              </option>
-            ))}
-          </select>
-          <button className="primary" onClick={doDiff} disabled={oldId == null || newId == null}>
-            比较
-          </button>
-          {report && (
-            <>
-              <button onClick={() => exportDiff("json")}>导出 JSON</button>
-              <button onClick={() => exportDiff("csv")}>导出 CSV</button>
-            </>
-          )}
-        </div>
-        {report && (
+    <div className="shell">
+      <aside className="side">
+        <div className="brand">
+          <BrandMark />
           <div>
-            {report.warnings.map((w, i) => (
-              <div key={i} className="warn">⚠ {w}</div>
-            ))}
-            <div className="summary">
-              新增 {report.summary.added_files}（+{humanSize(report.summary.added_bytes)}），删除{" "}
-              {report.summary.removed_files}（-{humanSize(report.summary.removed_bytes)}），增长{" "}
-              {report.summary.grown_files}，缩减 {report.summary.shrunk_files}；净变化{" "}
-              {report.summary.net_bytes} B
-            </div>
-            <table>
-              <thead>
-                <tr>
-                    <th>变化</th>
-                  <th>文件</th>
-                  <th>旧大小</th>
-                  <th>新大小</th>
-                </tr>
-              </thead>
-              <tbody>
-                {report.files.slice(0, 50).map((c) => (
-                  <tr key={c.rel_path}>
-                    <td>{KIND_LABEL[c.kind]}</td>
-                    <td className="mono">{c.rel_path}</td>
-                    <td>{c.old_size == null ? "—" : humanSize(c.old_size)}</td>
-                    <td>{c.new_size == null ? "—" : humanSize(c.new_size)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="brand-name">StorageScope</div>
+            <div className="brand-sub">存储显微镜</div>
           </div>
-        )}
-      </section>
-
-      {message && <div className="message">{message}</div>}
-
-      <section className="card">
-        <h2>5. 清理建议</h2>
-        <div className="row">
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={skipDupes}
-              onChange={(e) => setSkipDupes(e.target.checked)}
-            />
-            跳过重复文件检测（秒出，但不挖重复占的空间）
-          </label>
-          <label className="check">
-            重复检测最小体积
-            <input
-              className="num"
-              type="number"
-              min={1}
-              value={dupeMinMib}
-              onChange={(e) => setDupeMinMib(Number(e.target.value) || 1)}
-            />
-            MiB
-          </label>
-          {!analyzing ? (
-            <button className="primary" onClick={doAnalyze} disabled={!path}>
-              开始分析
-            </button>
+        </div>
+        {NAV.map((n) => (
+          <button
+            key={n.id}
+            className={`nav-leg ${section === n.id ? "active" : ""}`}
+            onClick={() => setSection(n.id)}
+          >
+            <span className="leg-no">{n.no}</span>
+            {n.label}
+          </button>
+        ))}
+        <div className="side-status">
+          {outcome ? (
+            <>
+              <b>{outcome.root}</b>
+              <br />
+              {outcome.files.length} 个文件
+              {tree && ` · ${humanSize(tree.total_size)}`}
+              <br />
+              {snapshots.length} 个快照在册
+            </>
           ) : (
-            <button className="danger" onClick={() => invoke("cancel_scan")}>
-              取消
-            </button>
+            <>尚未测绘任何海域。
+              <br />
+              从 01 扫描目录开始。</>
           )}
         </div>
-        {analyzing && (
-          <div className="progress">
-            {analyzeProgress
-              ? `哈希校验中：${analyzeProgress.done} / ${analyzeProgress.total} 个候选文件`
-              : progress
-                ? `扫描中：${progress.files} 个文件，${humanSize(progress.bytes)}`
-                : "正在启动…"}
-          </div>
-        )}
-        {analysis && (
-          <div>
-            <div className="summary">
-              估算可回收：<b>{humanSize(analysis.reclaimable_bytes)}</b>
-              （安全级缓存 + 重复冗余，为估算上限）
-              {!skipDupes &&
-                `；哈希校验读取 ${humanSize(analysis.hashed_bytes)}，失败 ${analysis.hash_errors} 个文件`}
-            </div>
+      </aside>
 
-            <div className="row" style={{ alignItems: "center" }}>
-              <button
-                className="danger"
-                onClick={doTrash}
-                disabled={selected.size === 0 || trashing}
-              >
-                {trashing ? "正在移入回收站…" : `移入回收站（${selected.size} 项，约 ${humanSize(selectedBytes())}）`}
-              </button>
-              <span className="summary" style={{ margin: 0 }}>
-                勾选要清理的项；重复文件组始终保留第一份。走系统回收站，可恢复。
-              </span>
-              <span style={{ flex: 1 }} />
-              {tree && (
-                <button
-                  onClick={() => {
-                    setViewMode("tree3d");
-                    document.getElementById("structure-card")?.scrollIntoView({ behavior: "smooth" });
-                  }}
-                >
-                  在 3D 树中查看（橙色 = 可清理）
-                </button>
-              )}
-            </div>
-
-            <h3>缓存 / 可清理项（{analysis.cache_hits.length}）</h3>
-            {analysis.cache_hits.length > 0 && (
-              <table>
-                <thead>
-                  <tr>
-                    <th></th>
-                    <th>大小</th>
-                    <th>目录</th>
-                    <th>建议</th>
-                    <th>规则</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {analysis.cache_hits.slice(0, 30).map((h) => (
-                    <tr key={h.rel_path}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={selected.has(h.rel_path)}
-                          onChange={() => toggleOne(h.rel_path)}
-                        />
-                      </td>
-                      <td>{humanSize(h.size)}</td>
-                      <td className="mono">{h.rel_path}</td>
-                      <td>{h.safety === "SafeToDelete" ? "可安全清理" : "建议确认"}</td>
-                      <td title={h.reason}>{h.rule_name}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-
-            <h3>大文件 Top {analysis.big_files.length}</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th>大小</th>
-                  <th>文件</th>
-                </tr>
-              </thead>
-              <tbody>
-                {analysis.big_files.slice(0, 20).map((f) => (
-                  <tr key={f.rel_path}>
-                    <td>{humanSize(f.size)}</td>
-                    <td className="mono">{f.rel_path}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-
-            {!skipDupes && (
-              <>
-                <h3>重复文件组（{analysis.dupe_groups.length} 组）</h3>
-                {analysis.dupe_groups.length === 0 ? (
-                  <div className="summary">未发现内容完全相同的重复文件</div>
+      <main className="main">
+        {section === "scan" && (
+          <div className="page" key="scan">
+            <h1 className="page-title">扫描目录</h1>
+            <p className="page-desc">选定一片海域开始测绘：递归统计每个目录的体积与文件数。</p>
+            <section className="panel">
+              <div className="row">
+                <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="选择或输入目录路径，如 D:\mc" />
+                <button onClick={pickDir}>浏览…</button>
+                {!scanning ? (
+                  <button className="primary" onClick={doScan} disabled={!path}>
+                    开始扫描
+                  </button>
                 ) : (
+                  <button className="danger" onClick={() => invoke("cancel_scan")}>
+                    取消
+                  </button>
+                )}
+              </div>
+              {scanning && progress && (
+                <div className="progress">
+                  已扫描 {progress.files} 个文件，{humanSize(progress.bytes)}
+                  {progress.errors > 0 && `，${progress.errors} 条异常`}
+                  <div className="current">{progress.current}</div>
+                </div>
+              )}
+              {outcome && !scanning && (
+                <div className="summary">
+                  {outcome.cancelled ? "⚠ 扫描被取消，结果不完整" : "扫描完成"}：
+                  {outcome.files.length} 个文件，耗时 {outcome.duration_ms} ms
+                  {outcome.errors.length > 0 && `，${outcome.errors.length} 条异常`}
+                </div>
+              )}
+            </section>
+            {outcome && !scanning && (
+              <div className="empty">
+                测绘完成。去 <b>02 目录结构</b> 看立体海图，或到 <b>05 清理建议</b> 打捞暗礁。
+              </div>
+            )}
+          </div>
+        )}
+
+        {section === "structure" && (
+          <div className="page" key="structure">
+            <h1 className="page-title">目录结构</h1>
+            <p className="page-desc">目录 = 海沟，体积 = 水深；橙色暗礁 = 含可清理项。</p>
+            {tree ? (
+              <section className="panel" id="structure-card">
+                <div className="row">
+                  <button className={viewMode === "list" ? "primary" : ""} onClick={() => setViewMode("list")}>
+                    列表
+                  </button>
+                  <button className={viewMode === "hier" ? "primary" : ""} onClick={() => setViewMode("hier")}>
+                    层级图
+                  </button>
+                  <button className={viewMode === "tree3d" ? "primary" : ""} onClick={() => setViewMode("tree3d")}>
+                    3D 树
+                  </button>
+                  <span style={{ flex: 1 }} />
+                  <button onClick={() => exportTree("json")}>导出 JSON</button>
+                  <button onClick={() => exportTree("csv")}>导出 CSV</button>
+                </div>
+                {viewMode === "tree3d" && <Tree3DView tree={tree} highlight={cleanableDirs} />}
+                {viewMode === "hier" && <HierarchyViews tree={tree} highlight={cleanableDirs} />}
+                {viewMode === "city" && (
+                  <>
+                    <div className="summary">
+                      每栋楼 = 一个目录，楼高 ∝ 体积（对数刻度），同街区同色系。拖动旋转，滚轮缩放。
+                    </div>
+                    <CityView tree={tree} />
+                  </>
+                )}
+                {viewMode === "list" && (
+                  <div className="tree">
+                    <TreeNode stat={tree} depth={0} />
+                  </div>
+                )}
+              </section>
+            ) : (
+              <div className="empty">
+                还没有数据。先到 <b>01 扫描目录</b> 完成一次测绘，这里会展开列表、层级图和 3D 立体树。
+              </div>
+            )}
+          </div>
+        )}
+
+        {section === "snap" && (
+          <div className="page" key="snap">
+            <h1 className="page-title">快照与趋势</h1>
+            <p className="page-desc">给海域留下坐标记录，看磁盘随时间的膨胀曲线。</p>
+            <section className="panel">
+              <div className="row">
+                <input value={db} onChange={(e) => setDb(e.target.value)} placeholder="快照数据库路径" />
+                <button onClick={doSaveSnapshot} disabled={!path || scanning}>
+                  扫描并保存快照
+                </button>
+                <button onClick={refreshSnapshots}>刷新列表</button>
+                <span style={{ flex: 1 }} />
+                <label className="check">
+                  自动快照
+                  <select value={autoMinutes} onChange={(e) => setAutoMinutes(Number(e.target.value))}>
+                    <option value={0}>关闭</option>
+                    <option value={15}>每 15 分钟</option>
+                    <option value={60}>每小时</option>
+                    <option value={360}>每 6 小时</option>
+                  </select>
+                </label>
+              </div>
+              {snapshots.length > 0 && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>根目录</th>
+                      <th>文件数</th>
+                      <th>大小</th>
+                      <th>状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapshots.map((s) => (
+                      <tr key={s.id}>
+                        <td>#{s.id}</td>
+                        <td className="mono">{s.root}</td>
+                        <td>{s.file_count}</td>
+                        <td>{humanSize(s.total_bytes)}</td>
+                        <td>{s.status === "complete" ? "完整" : "⚠ 不完整"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <TrendChart snapshots={snapshots.filter((s) => s.status === "complete")} />
+              {snapshots.length === 0 && (
+                <div className="empty">还没有快照。设定扫描路径后点"扫描并保存快照"，两次记录后即可看到趋势。</div>
+              )}
+            </section>
+          </div>
+        )}
+
+        {section === "diff" && (
+          <div className="page" key="diff">
+            <h1 className="page-title">差异比较</h1>
+            <p className="page-desc">对比两次快照，新增、删除、增长、缩减一目了然。</p>
+            <section className="panel">
+              <div className="row">
+                <select value={oldId ?? ""} onChange={(e) => setOldId(Number(e.target.value) || null)}>
+                  <option value="">旧快照…</option>
+                  {snapshots.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      #{s.id}（{s.file_count} 文件）
+                    </option>
+                  ))}
+                </select>
+                <select value={newId ?? ""} onChange={(e) => setNewId(Number(e.target.value) || null)}>
+                  <option value="">新快照…</option>
+                  {snapshots.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      #{s.id}（{s.file_count} 文件）
+                    </option>
+                  ))}
+                </select>
+                <button className="primary" onClick={doDiff} disabled={oldId == null || newId == null}>
+                  比较
+                </button>
+                {report && (
+                  <>
+                    <button onClick={() => exportDiff("json")}>导出 JSON</button>
+                    <button onClick={() => exportDiff("csv")}>导出 CSV</button>
+                  </>
+                )}
+              </div>
+              {report ? (
+                <div>
+                  {report.warnings.map((w, i) => (
+                    <div key={i} className="warn">⚠ {w}</div>
+                  ))}
+                  <div className="summary">
+                    新增 {report.summary.added_files}（+{humanSize(report.summary.added_bytes)}），删除{" "}
+                    {report.summary.removed_files}（-{humanSize(report.summary.removed_bytes)}），增长{" "}
+                    {report.summary.grown_files}，缩减 {report.summary.shrunk_files}；净变化{" "}
+                    {report.summary.net_bytes} B
+                  </div>
                   <table>
                     <thead>
                       <tr>
-                        <th></th>
-                        <th>单份大小</th>
-                        <th>份数</th>
-                        <th>冗余</th>
-                        <th>路径（勾选 = 删除第一份以外的所有副本）</th>
+                        <th>变化</th>
+                        <th>文件</th>
+                        <th>旧大小</th>
+                        <th>新大小</th>
                       </tr>
                     </thead>
-                    <tbody>
-                      {analysis.dupe_groups.slice(0, 20).map((g) => (
-                        <tr key={g.hash}>
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={g.files.length > 1 && g.files.slice(1).every((p) => selected.has(p))}
-                              onChange={() => toggleDupeGroup(g)}
-                            />
-                          </td>
-                          <td>{humanSize(g.size)}</td>
-                          <td>×{g.files.length}</td>
-                          <td>{humanSize(g.wasted)}</td>
-                          <td className="mono">
-                            {g.files.slice(0, 4).map((p) => (
-                              <div key={p}>{p}</div>
-                            ))}
-                            {g.files.length > 4 && <div>… 以及另外 {g.files.length - 4} 份</div>}
-                          </td>
+                    <tbody key={`${oldId}-${newId}`}>
+                      {report.files.slice(0, 50).map((c) => (
+                        <tr key={c.rel_path} className="sounder">
+                          <td>{KIND_LABEL[c.kind]}</td>
+                          <td className="mono">{c.rel_path}</td>
+                          <td>{c.old_size == null ? "—" : humanSize(c.old_size)}</td>
+                          <td>{c.new_size == null ? "—" : humanSize(c.new_size)}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
-                )}
-                {analysis.dupe_groups.length > 20 && (
-                  <div className="summary">仅显示前 20 组，共 {analysis.dupe_groups.length} 组</div>
-                )}
-              </>
-            )}
+                </div>
+              ) : (
+                <div className="empty">选择两个快照后点"比较"。新出现的差异行会以琥珀色闪现提醒。</div>
+              )}
+            </section>
           </div>
         )}
-      </section>
+
+        {section === "clean" && (
+          <div className="page" key="clean">
+            <h1 className="page-title">清理建议</h1>
+            <p className="page-desc">打捞暗礁：缓存目录、大文件、重复副本。走系统回收站，可恢复。</p>
+            <section className="panel">
+              <div className="row">
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={skipDupes}
+                    onChange={(e) => setSkipDupes(e.target.checked)}
+                  />
+                  跳过重复文件检测（秒出，但不挖重复占的空间）
+                </label>
+                <label className="check">
+                  重复检测最小体积
+                  <input
+                    className="num"
+                    type="number"
+                    min={1}
+                    value={dupeMinMib}
+                    onChange={(e) => setDupeMinMib(Number(e.target.value) || 1)}
+                  />
+                  MiB
+                </label>
+                {!analyzing ? (
+                  <button className="primary" onClick={doAnalyze} disabled={!path}>
+                    开始分析
+                  </button>
+                ) : (
+                  <button className="danger" onClick={() => invoke("cancel_scan")}>
+                    取消
+                  </button>
+                )}
+              </div>
+              {analyzing && (
+                <div className="progress">
+                  {analyzeProgress
+                    ? `哈希校验中：${analyzeProgress.done} / ${analyzeProgress.total} 个候选文件`
+                    : progress
+                      ? `扫描中：${progress.files} 个文件，${humanSize(progress.bytes)}`
+                      : "正在启动…"}
+                </div>
+              )}
+              {!analysis && !analyzing && (
+                <div className="empty">
+                  在 01 设定扫描路径后点"开始分析"。分析完成后，橙色暗礁会同步标到 02 的 3D 树上。
+                </div>
+              )}
+              {analysis && (
+                <div>
+                  <div className="summary">
+                    估算可回收：<b>{humanSize(analysis.reclaimable_bytes)}</b>
+                    （安全级缓存 + 重复冗余，为估算上限）
+                    {!skipDupes &&
+                      `；哈希校验读取 ${humanSize(analysis.hashed_bytes)}，失败 ${analysis.hash_errors} 个文件`}
+                  </div>
+
+                  <div className="danger-zone">
+                    <button
+                      className="danger"
+                      onClick={doTrash}
+                      disabled={selected.size === 0 || trashing}
+                    >
+                      {trashing ? "正在移入回收站…" : `移入回收站（${selected.size} 项，约 ${humanSize(selectedBytes())}）`}
+                    </button>
+                    <span className="summary" style={{ margin: 0 }}>
+                      勾选要清理的项；重复文件组始终保留第一份。
+                    </span>
+                    <span style={{ flex: 1 }} />
+                    {tree && (
+                      <button
+                        onClick={() => {
+                          setViewMode("tree3d");
+                          setSection("structure");
+                        }}
+                      >
+                        在 3D 树中查看（橙色 = 可清理）
+                      </button>
+                    )}
+                  </div>
+
+                  <h3>缓存 / 可清理项（{analysis.cache_hits.length}）</h3>
+                  {analysis.cache_hits.length > 0 && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th></th>
+                          <th>大小</th>
+                          <th>目录</th>
+                          <th>建议</th>
+                          <th>规则</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {analysis.cache_hits.slice(0, 30).map((h) => (
+                          <tr key={h.rel_path}>
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={selected.has(h.rel_path)}
+                                onChange={() => toggleOne(h.rel_path)}
+                              />
+                            </td>
+                            <td>{humanSize(h.size)}</td>
+                            <td className="mono">{h.rel_path}</td>
+                            <td>{h.safety === "SafeToDelete" ? "可安全清理" : "建议确认"}</td>
+                            <td title={h.reason}>{h.rule_name}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  <h3>大文件 Top {analysis.big_files.length}</h3>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>大小</th>
+                        <th>文件</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {analysis.big_files.slice(0, 20).map((f) => (
+                        <tr key={f.rel_path}>
+                          <td>{humanSize(f.size)}</td>
+                          <td className="mono">{f.rel_path}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+
+                  {!skipDupes && (
+                    <>
+                      <h3>重复文件组（{analysis.dupe_groups.length} 组）</h3>
+                      {analysis.dupe_groups.length === 0 ? (
+                        <div className="summary">未发现内容完全相同的重复文件</div>
+                      ) : (
+                        <table>
+                          <thead>
+                            <tr>
+                              <th></th>
+                              <th>单份大小</th>
+                              <th>份数</th>
+                              <th>冗余</th>
+                              <th>路径（勾选 = 删除第一份以外的所有副本）</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {analysis.dupe_groups.slice(0, 20).map((g) => (
+                              <tr key={g.hash}>
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    checked={g.files.length > 1 && g.files.slice(1).every((p) => selected.has(p))}
+                                    onChange={() => toggleDupeGroup(g)}
+                                  />
+                                </td>
+                                <td>{humanSize(g.size)}</td>
+                                <td>×{g.files.length}</td>
+                                <td>{humanSize(g.wasted)}</td>
+                                <td className="mono">
+                                  {g.files.slice(0, 4).map((p) => (
+                                    <div key={p}>{p}</div>
+                                  ))}
+                                  {g.files.length > 4 && <div>… 以及另外 {g.files.length - 4} 份</div>}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                      {analysis.dupe_groups.length > 20 && (
+                        <div className="summary">仅显示前 20 组，共 {analysis.dupe_groups.length} 组</div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+
+        {message && <div className="message">{message}</div>}
+      </main>
     </div>
   );
 }

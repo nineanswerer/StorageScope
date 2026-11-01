@@ -168,8 +168,8 @@ export default function Tree3DView({ tree, highlight }: { tree: DirStat; highlig
     mount.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0b0e14);
-    scene.fog = new THREE.Fog(0x0b0e14, 500, 1600);
+    scene.background = new THREE.Color(0x060d16);
+    scene.fog = new THREE.Fog(0x060d16, 500, 1600);
 
     const { nodes, edges } = balloonLayout(focus);
     const maxLog = Math.max(...nodes.map((n) => Math.log10(1 + n.stat.total_size / 1e6)), 1);

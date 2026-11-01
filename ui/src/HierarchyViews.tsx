@@ -104,7 +104,7 @@ function Sunburst({ root, hues, onDrill, highlight }: { root: DirStat; hues: Map
   return (
     <svg viewBox={`0 0 ${S} ${S}`} className="hier-svg">
       {/* 中心：点击返回上一级由面包屑处理；这里显示当前根 */}
-      <circle cx={C} cy={C} r={R0 - 6} fill="#1d2026" stroke="#2c313a" />
+      <circle cx={C} cy={C} r={R0 - 6} fill="#0d1a29" stroke="#16324a" />
       <text x={C} y={C - 8} textAnchor="middle" fill="#eaf6ff" fontSize="16" fontWeight="bold">
         {root.name}
       </text>
@@ -185,7 +185,7 @@ function Icicle({ root, hues, onDrill, highlight }: { root: DirStat; hues: Map<s
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="hier-svg">
-      <rect x={0} y={0} width={W} height={36} rx={6} fill="#1d2026" stroke="#2c313a" />
+      <rect x={0} y={0} width={W} height={36} rx={6} fill="#0d1a29" stroke="#16324a" />
       <text x={12} y={23} fill="#eaf6ff" fontSize="14" fontWeight="bold">
         {root.name} · {humanSize(root.total_size)} · {root.file_count} 文件
       </text>
