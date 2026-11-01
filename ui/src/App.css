@@ -235,13 +235,98 @@ tbody tr:hover { background: var(--surface-2); }
 .action-btns { display: flex; gap: 10px; flex-wrap: wrap; }
 .action-note { flex-basis: 100%; font-size: 12px; color: var(--faint); }
 
+/* ---- 扫描任务与结果 ---- */
+
+.workflow-nav { display: flex; flex-direction: column; gap: 2px; }
+.scan-panel { max-width: 1100px; }
+.scan-form { background: var(--surface-1); border: 1px solid var(--line); padding: 18px 20px; }
+.field-label { display: block; margin-bottom: 8px; color: var(--text); font-size: 13px; font-weight: 600; }
+.scan-input-row { display: flex; gap: 8px; min-width: 0; }
+.scan-input-row input { min-width: 0; min-height: 38px; caret-color: var(--accent); }
+.scan-form-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 14px; }
+.field-hint { color: var(--faint); font-size: 12px; }
+
+.scan-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line);
+}
+.scan-result-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.scan-result-copy strong { font-size: 14px; font-weight: 600; }
+.scan-result-copy span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.result-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ---- 真实数据构成的空间分布 ---- */
+
+.storage-overview { padding: 4px 0 22px; border-bottom: 1px solid var(--line); }
+.overview-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.overview-heading h2 { margin: 0; font-size: 15px; }
+.overview-heading > span { color: var(--faint); font-size: 12px; }
+.storage-bar { display: flex; width: 100%; height: 12px; margin: 12px 0 16px; overflow: hidden; background: var(--surface-2); }
+.storage-segment { display: block; min-width: 0; height: 100%; }
+.storage-segment + .storage-segment { border-left: 1px solid var(--surface-0); }
+.overview-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 28px; }
+.overview-item { display: grid; grid-template-columns: 10px minmax(0, 1fr) 52px 82px; align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
+.overview-swatch { width: 8px; height: 8px; }
+.overview-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-percent { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+.overview-size { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---- 目录工具栏 ---- */
+
+.view-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.segmented-control { display: inline-flex; gap: 2px; padding: 2px; background: var(--surface-0); border: 1px solid var(--line-strong); border-radius: var(--radius); }
+.segmented-control button { border: none; background: transparent; padding: 6px 13px; }
+.segmented-control button:hover { background: var(--surface-2); }
+.segmented-control button.active { background: var(--surface-3); color: var(--text); }
+.toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.empty button { margin-top: 16px; }
+td.mono { overflow-wrap: anywhere; }
+
+/* ---- 表格行内操作 ---- */
+
+.row-actions { white-space: nowrap; }
 .row-link {
+  padding: 0;
+  border: none;
+  background: none;
   color: var(--accent);
   font-size: 12px;
+  font-weight: 400;
   cursor: pointer;
   text-decoration: none;
   text-underline-offset: 3px;
   white-space: nowrap;
 }
 .row-link + .row-link { margin-left: 10px; }
-.row-link:hover { text-decoration: underline; }
+.row-link:hover { border: none; background: none; color: var(--accent-hover); text-decoration: underline; }
+
+.page-title { text-wrap: balance; }
+.page-desc { max-width: 75ch; text-wrap: pretty; }
+
+@media (max-width: 1000px) {
+  .side { width: 184px; flex-basis: 184px; }
+  .main { padding: 22px; }
+  .overview-legend { grid-template-columns: 1fr; }
+  .scan-result, .scan-form-footer { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 720px) {
+  .side { width: 64px; flex-basis: 64px; padding: 16px 8px; }
+  .brand { justify-content: center; padding: 2px 0 18px; }
+  .brand-copy, .leg-label, .side-status { display: none; }
+  .nav-leg { justify-content: center; gap: 0; padding: 9px 4px; }
+  .nav-leg .leg-no { width: auto; }
+  .main { padding: 20px 16px 40px; }
+  .scan-input-row, .view-toolbar { align-items: stretch; flex-direction: column; }
+  .scan-input-row button { align-self: flex-start; }
+  .overview-percent { display: none; }
+  .overview-item { grid-template-columns: 10px minmax(0, 1fr) 82px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; transition: none !important; }
+}

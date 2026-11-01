@@ -11,9 +11,10 @@
   "app": {
     "windows": [
       {
-        "title": "StorageScope 存储显微镜",
+        "title": "StorageScope · 磁盘空间管理",
         "width": 1200,
-        "height": 800
+        "height": 800,
+        "theme": "Dark"
       }
     ],
     "security": {

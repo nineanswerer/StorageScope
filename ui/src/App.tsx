@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import CityView from "./CityView";
+import StorageOverview from "./StorageOverview";
 import HierarchyViews from "./HierarchyViews";
 import Tree3DView from "./Tree3DView";
 import TrendChart from "./TrendChart";
@@ -113,10 +114,23 @@ const KIND_LABEL: Record<string, string> = {
 
 function TreeNode({ stat, depth }: { stat: DirStat; depth: number }) {
   const [open_, setOpen] = useState(depth < 1);
+  const hasChildren = stat.children.length > 0;
   return (
     <div className="tree-node">
-      <div className="tree-row" onClick={() => setOpen(!open_)}>
-        <span className="tree-toggle">{stat.children.length > 0 ? (open_ ? "▾" : "▸") : "·"}</span>
+      <div
+        className="tree-row"
+        role={hasChildren ? "button" : undefined}
+        tabIndex={hasChildren ? 0 : undefined}
+        aria-expanded={hasChildren ? open_ : undefined}
+        onClick={() => hasChildren && setOpen(!open_)}
+        onKeyDown={(event) => {
+          if (hasChildren && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            setOpen(!open_);
+          }
+        }}
+      >
+        <span className="tree-toggle" aria-hidden>{hasChildren ? (open_ ? "▾" : "▸") : "·"}</span>
         <span className="tree-name">
           {stat.name}
           {stat.has_errors && <span className="warn"> ⚠ 统计可能不完整</span>}
@@ -521,21 +535,24 @@ export default function App() {
       <aside className="side">
         <div className="brand">
           <BrandMark />
-          <div>
+          <div className="brand-copy">
             <div className="brand-name">StorageScope</div>
             <div className="brand-sub">磁盘空间管理</div>
           </div>
         </div>
-        {NAV.map((n) => (
-          <button
-            key={n.id}
-            className={`nav-leg ${section === n.id ? "active" : ""}`}
-            onClick={() => setSection(n.id)}
-          >
-            <span className="leg-no">{n.no}</span>
-            {n.label}
-          </button>
-        ))}
+        <nav className="workflow-nav" aria-label="磁盘管理工作流">
+          {NAV.map((n) => (
+            <button
+              key={n.id}
+              className={`nav-leg ${section === n.id ? "active" : ""}`}
+              aria-current={section === n.id ? "page" : undefined}
+              onClick={() => setSection(n.id)}
+            >
+              <span className="leg-no">{n.no}</span>
+              <span className="leg-label">{n.label}</span>
+            </button>
+          ))}
+        </nav>
         <div className="side-status">
           {outcome ? (
             <>
@@ -559,40 +576,57 @@ export default function App() {
           <div className="page" key="scan">
             <h1 className="page-title">扫描目录</h1>
             <p className="page-desc">选择要检查的目录，递归统计每个目录的空间占用与文件数。</p>
-            <section className="panel">
-              <div className="row">
-                <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="选择或输入目录路径，如 D:\mc" />
-                <button onClick={pickDir}>浏览…</button>
-                {!scanning ? (
-                  <button className="primary" onClick={doScan} disabled={!path}>
-                    开始扫描
-                  </button>
-                ) : (
-                  <button className="danger" onClick={() => invoke("cancel_scan")}>
-                    取消
-                  </button>
-                )}
+            <section className="panel scan-panel" aria-label="目录扫描设置">
+              <div className="scan-form">
+                <label className="field-label" htmlFor="scan-path">目录路径</label>
+                <div className="scan-input-row">
+                  <input
+                    id="scan-path"
+                    value={path}
+                    onChange={(e) => setPath(e.target.value)}
+                    placeholder="例如 D:\Games 或 C:\Users"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <button onClick={pickDir}>选择目录</button>
+                </div>
+                <div className="scan-form-footer">
+                  <span className="field-hint">只读取目录与文件信息，不会修改文件内容。</span>
+                  {!scanning ? (
+                    <button className="primary" onClick={doScan} disabled={!path.trim()}>
+                      开始扫描
+                    </button>
+                  ) : (
+                    <button className="danger" onClick={() => invoke("cancel_scan")}>
+                      取消扫描
+                    </button>
+                  )}
+                </div>
               </div>
               {scanning && progress && (
-                <div className="progress">
+                <div className="progress" role="status">
                   已扫描 {progress.files} 个文件，{humanSize(progress.bytes)}
                   {progress.errors > 0 && `，${progress.errors} 条异常`}
                   <div className="current">{progress.current}</div>
                 </div>
               )}
               {outcome && !scanning && (
-                <div className="summary">
-                  {outcome.cancelled ? "⚠ 扫描被取消，结果不完整" : "扫描完成"}：
-                  {outcome.files.length} 个文件，耗时 {outcome.duration_ms} ms
-                  {outcome.errors.length > 0 && `，${outcome.errors.length} 条异常`}
+                <div className="scan-result" role="status">
+                  <div className="scan-result-copy">
+                    <strong>{outcome.cancelled ? "扫描已取消，结果不完整" : "扫描完成"}</strong>
+                    <span>
+                      {outcome.files.length} 个文件{tree && ` · ${humanSize(tree.total_size)}`} · 耗时 {outcome.duration_ms} ms
+                      {outcome.errors.length > 0 && ` · ${outcome.errors.length} 条异常`}
+                    </span>
+                  </div>
+                  <div className="result-actions">
+                    <button className="primary" onClick={() => setSection("structure")}>查看目录结构</button>
+                    <button onClick={() => setSection("clean")}>分析可回收空间</button>
+                  </div>
                 </div>
               )}
             </section>
-            {outcome && !scanning && (
-              <div className="empty">
-                扫描完成。前往 <b>02 目录结构</b> 查看空间分布，或到 <b>05 清理建议</b> 分析可回收空间。
-              </div>
-            )}
+            {outcome && tree && !scanning && <StorageOverview tree={tree} />}
           </div>
         )}
 
@@ -601,40 +635,47 @@ export default function App() {
             <h1 className="page-title">目录结构</h1>
             <p className="page-desc">按目录查看空间占用；橙色标记表示包含可清理项。</p>
             {tree ? (
-              <section className="panel" id="structure-card">
-                <div className="row">
-                  <button className={viewMode === "list" ? "primary" : ""} onClick={() => setViewMode("list")}>
-                    列表
-                  </button>
-                  <button className={viewMode === "hier" ? "primary" : ""} onClick={() => setViewMode("hier")}>
-                    层级图
-                  </button>
-                  <button className={viewMode === "tree3d" ? "primary" : ""} onClick={() => setViewMode("tree3d")}>
-                    3D 树
-                  </button>
-                  <span style={{ flex: 1 }} />
-                  <button onClick={() => exportTree("json")}>导出 JSON</button>
-                  <button onClick={() => exportTree("csv")}>导出 CSV</button>
-                </div>
-                {viewMode === "tree3d" && <Tree3DView tree={tree} highlight={cleanableDirs} />}
-                {viewMode === "hier" && <HierarchyViews tree={tree} highlight={cleanableDirs} />}
-                {viewMode === "city" && (
-                  <>
-                    <div className="summary">
-                      每栋楼 = 一个目录，楼高 ∝ 体积（对数刻度），同街区同色系。拖动旋转，滚轮缩放。
+              <>
+                <StorageOverview tree={tree} />
+                <section className="panel" id="structure-card">
+                  <div className="view-toolbar">
+                    <div className="segmented-control" role="group" aria-label="目录视图">
+                      <button className={viewMode === "list" ? "active" : ""} aria-pressed={viewMode === "list"} onClick={() => setViewMode("list")}>
+                        列表
+                      </button>
+                      <button className={viewMode === "hier" ? "active" : ""} aria-pressed={viewMode === "hier"} onClick={() => setViewMode("hier")}>
+                        层级图
+                      </button>
+                      <button className={viewMode === "tree3d" ? "active" : ""} aria-pressed={viewMode === "tree3d"} onClick={() => setViewMode("tree3d")}>
+                        3D 树
+                      </button>
                     </div>
-                    <CityView tree={tree} />
-                  </>
-                )}
-                {viewMode === "list" && (
-                  <div className="tree">
-                    <TreeNode stat={tree} depth={0} />
+                    <div className="toolbar-actions">
+                      <button onClick={() => exportTree("json")}>导出 JSON</button>
+                      <button onClick={() => exportTree("csv")}>导出 CSV</button>
+                    </div>
                   </div>
-                )}
-              </section>
+                  {viewMode === "tree3d" && <Tree3DView tree={tree} highlight={cleanableDirs} />}
+                  {viewMode === "hier" && <HierarchyViews tree={tree} highlight={cleanableDirs} />}
+                  {viewMode === "city" && (
+                    <>
+                      <div className="summary">
+                        每栋楼 = 一个目录，楼高 ∝ 体积（对数刻度），同街区同色系。拖动旋转，滚轮缩放。
+                      </div>
+                      <CityView tree={tree} />
+                    </>
+                  )}
+                  {viewMode === "list" && (
+                    <div className="tree">
+                      <TreeNode stat={tree} depth={0} />
+                    </div>
+                  )}
+                </section>
+              </>
             ) : (
               <div className="empty">
-                还没有数据。先到 <b>01 扫描目录</b> 完成一次扫描，这里会显示列表、层级图和 3D 立体树。
+                <div>还没有扫描数据。完成一次扫描后，这里会显示空间分布、层级图和 3D 立体树。</div>
+                <button onClick={() => setSection("scan")}>前往扫描目录</button>
               </div>
             )}
           </div>
@@ -646,7 +687,7 @@ export default function App() {
             <p className="page-desc">保存目录快照，跟踪磁盘占用随时间的变化。</p>
             <section className="panel">
               <div className="row">
-                <input value={db} onChange={(e) => setDb(e.target.value)} placeholder="快照数据库路径" />
+                <input aria-label="快照数据库路径" value={db} onChange={(e) => setDb(e.target.value)} placeholder="快照数据库路径" />
                 <button onClick={doSaveSnapshot} disabled={!path || scanning}>
                   扫描并保存快照
                 </button>
@@ -700,7 +741,7 @@ export default function App() {
             <p className="page-desc">对比两次快照，新增、删除、增长、缩减一目了然。</p>
             <section className="panel">
               <div className="row">
-                <select value={oldId ?? ""} onChange={(e) => setOldId(Number(e.target.value) || null)}>
+                <select aria-label="旧快照" value={oldId ?? ""} onChange={(e) => setOldId(Number(e.target.value) || null)}>
                   <option value="">旧快照…</option>
                   {snapshots.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -708,7 +749,7 @@ export default function App() {
                     </option>
                   ))}
                 </select>
-                <select value={newId ?? ""} onChange={(e) => setNewId(Number(e.target.value) || null)}>
+                <select aria-label="新快照" value={newId ?? ""} onChange={(e) => setNewId(Number(e.target.value) || null)}>
                   <option value="">新快照…</option>
                   {snapshots.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -801,7 +842,7 @@ export default function App() {
                 )}
               </div>
               {analyzing && (
-                <div className="progress">
+                <div className="progress" role="status">
                   {analyzeProgress
                     ? `哈希校验中：${analyzeProgress.done} / ${analyzeProgress.total} 个候选文件`
                     : progress
@@ -883,6 +924,7 @@ export default function App() {
                             <td>
                               <input
                                 type="checkbox"
+                                aria-label={`选择 ${h.rel_path}`}
                                 checked={selected.has(h.rel_path)}
                                 onChange={() => toggleOne(h.rel_path)}
                               />
@@ -891,9 +933,9 @@ export default function App() {
                             <td className="mono">{h.rel_path}</td>
                             <td>{h.safety === "SafeToDelete" ? "可安全清理" : "建议确认"}</td>
                             <td title={h.reason}>{h.rule_name}</td>
-                            <td>
-                              <a className="row-link" onClick={() => reveal(h.rel_path)}>定位</a>
-                              <a className="row-link" onClick={() => copyPath(h.rel_path)}>复制路径</a>
+                            <td className="row-actions">
+                              <button type="button" className="row-link" onClick={() => reveal(h.rel_path)}>定位</button>
+                              <button type="button" className="row-link" onClick={() => copyPath(h.rel_path)}>复制路径</button>
                             </td>
                           </tr>
                         ))}
@@ -915,9 +957,9 @@ export default function App() {
                         <tr key={f.rel_path}>
                           <td>{humanSize(f.size)}</td>
                           <td className="mono">{f.rel_path}</td>
-                          <td>
-                            <a className="row-link" onClick={() => reveal(f.rel_path)}>定位</a>
-                            <a className="row-link" onClick={() => copyPath(f.rel_path)}>复制路径</a>
+                          <td className="row-actions">
+                            <button type="button" className="row-link" onClick={() => reveal(f.rel_path)}>定位</button>
+                            <button type="button" className="row-link" onClick={() => copyPath(f.rel_path)}>复制路径</button>
                           </td>
                         </tr>
                       ))}
@@ -960,6 +1002,7 @@ export default function App() {
                                 <td>
                                   <input
                                     type="checkbox"
+                                    aria-label={`选择重复文件组 ${g.hash}`}
                                     checked={g.files.length > 1 && g.files.slice(1).every((p) => selected.has(p))}
                                     onChange={() => toggleDupeGroup(g)}
                                   />
@@ -989,7 +1032,7 @@ export default function App() {
           </div>
         )}
 
-        {message && <div className="message">{message}</div>}
+        {message && <div className="message" role="status">{message}</div>}
       </main>
     </div>
   );
