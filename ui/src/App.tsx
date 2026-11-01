@@ -105,6 +105,22 @@ function humanSize(bytes: number): string {
   return i === 0 ? `${v} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`;
 }
 
+function signedSize(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  return `${bytes > 0 ? "+" : "−"}${humanSize(Math.abs(bytes))}`;
+}
+
+function formatSnapshotTime(seconds: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(seconds * 1000));
+}
+
 const KIND_LABEL: Record<string, string> = {
   Added: "新增",
   Removed: "删除",
@@ -331,6 +347,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section]);
 
+  // 首次进入差异页时预选最近两次快照，用户仍可手动更换。
+  useEffect(() => {
+    if (section !== "diff" || snapshots.length < 2 || oldId != null || newId != null) return;
+    setOldId(snapshots[snapshots.length - 2].id);
+    setNewId(snapshots[snapshots.length - 1].id);
+  }, [section, snapshots, oldId, newId]);
+
   // M7 视图联动：可清理目录集合 = 缓存命中目录 + 含重复文件的目录
   const cleanableDirs = useMemo(() => {
     const s = new Set<string>();
@@ -457,6 +480,7 @@ export default function App() {
     if (!path || !db) return;
     setScanning(true);
     setMessage("");
+    setProgress(null);
     try {
       const r = await invoke<{ id: number; file_count: number; total_bytes: number }>(
         "save_snapshot",
@@ -481,8 +505,9 @@ export default function App() {
   }
 
   async function doDiff() {
-    if (oldId == null || newId == null) return;
+    if (oldId == null || newId == null || oldId === newId) return;
     setMessage("");
+    setReport(null);
     try {
       const r = await invoke<DiffReport>("diff_snapshots", { db, old: oldId, new: newId });
       setReport(r);
@@ -530,6 +555,33 @@ export default function App() {
     setMessage(`已导出：${p}`);
   }
 
+  const snapshotStats = useMemo(() => {
+    const complete = snapshots.filter((s) => s.status === "complete");
+    const latest = complete[complete.length - 1];
+    const previous = complete[complete.length - 2];
+    return {
+      complete,
+      latest,
+      delta: latest && previous ? latest.total_bytes - previous.total_bytes : null,
+    };
+  }, [snapshots]);
+
+  const changedDirs = useMemo(
+    () => report?.dirs.slice().sort((a, b) => Math.abs(b.net_bytes) - Math.abs(a.net_bytes)) ?? [],
+    [report]
+  );
+
+  const diffBytes = useMemo(() => {
+    const bytes: Record<FileChange["kind"], number> = { Added: 0, Removed: 0, Grown: 0, Shrunk: 0 };
+    for (const c of report?.files ?? []) {
+      if (c.kind === "Added") bytes.Added += c.new_size ?? 0;
+      if (c.kind === "Removed") bytes.Removed += c.old_size ?? 0;
+      if (c.kind === "Grown") bytes.Grown += (c.new_size ?? 0) - (c.old_size ?? 0);
+      if (c.kind === "Shrunk") bytes.Shrunk += (c.old_size ?? 0) - (c.new_size ?? 0);
+    }
+    return bytes;
+  }, [report]);
+
   const cleanupStats = useMemo(() => {
     const safeHits = analysis?.cache_hits.filter((h) => h.safety === "SafeToDelete") ?? [];
     const reviewHits = analysis?.cache_hits.filter((h) => h.safety === "ReviewAdvised") ?? [];
@@ -572,6 +624,14 @@ export default function App() {
               <br />
               {outcome.files.length} 个文件
               {tree && ` · ${humanSize(tree.total_size)}`}
+              <br />
+              {snapshots.length} 个快照
+            </>
+          ) : path ? (
+            <>
+              <b>{path}</b>
+              <br />
+              已设置目录，尚未生成结构扫描结果。
               <br />
               {snapshots.length} 个快照
             </>
@@ -696,52 +756,131 @@ export default function App() {
         {section === "snap" && (
           <div className="page" key="snap">
             <h1 className="page-title">快照与趋势</h1>
-            <p className="page-desc">保存目录快照，跟踪磁盘占用随时间的变化。</p>
-            <section className="panel">
-              <div className="row">
-                <input aria-label="快照数据库路径" value={db} onChange={(e) => setDb(e.target.value)} placeholder="快照数据库路径" />
-                <button onClick={doSaveSnapshot} disabled={!path || scanning}>
-                  扫描并保存快照
-                </button>
-                <button onClick={refreshSnapshots}>刷新列表</button>
-                <span style={{ flex: 1 }} />
-                <label className="check">
-                  自动快照
-                  <select value={autoMinutes} onChange={(e) => setAutoMinutes(Number(e.target.value))}>
-                    <option value={0}>关闭</option>
-                    <option value={15}>每 15 分钟</option>
-                    <option value={60}>每小时</option>
-                    <option value={360}>每 6 小时</option>
-                  </select>
-                </label>
+            <p className="page-desc">定期记录目录状态，用真实快照观察占用变化，并为差异比较提供依据。</p>
+            <section className="panel snapshot-panel" aria-label="快照记录与趋势">
+              <div className="cleanup-settings">
+                <div className="cleanup-settings-copy">
+                  <h2>记录设置</h2>
+                  <p>快照保存文件清单与大小，不复制文件内容；应用运行期间可按间隔自动记录。</p>
+                </div>
+                <div className="cleanup-controls">
+                  <label className="db-field">
+                    <span>快照数据库</span>
+                    <input aria-label="快照数据库路径" value={db} onChange={(e) => setDb(e.target.value)} placeholder="快照数据库路径" />
+                  </label>
+                  <label className="check">
+                    自动快照
+                    <select aria-label="自动快照间隔" value={autoMinutes} onChange={(e) => setAutoMinutes(Number(e.target.value))}>
+                      <option value={0}>关闭</option>
+                      <option value={15}>每 15 分钟</option>
+                      <option value={60}>每小时</option>
+                      <option value={360}>每 6 小时</option>
+                    </select>
+                  </label>
+                  <button onClick={refreshSnapshots}>刷新</button>
+                  <button className="primary" onClick={doSaveSnapshot} disabled={!path.trim() || !db.trim() || scanning}>
+                    {scanning ? "正在保存…" : "扫描并保存快照"}
+                  </button>
+                </div>
               </div>
-              {snapshots.length > 0 && (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>ID</th>
-                      <th>根目录</th>
-                      <th>文件数</th>
-                      <th>大小</th>
-                      <th>状态</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {snapshots.map((s) => (
-                      <tr key={s.id}>
-                        <td>#{s.id}</td>
-                        <td className="mono">{s.root}</td>
-                        <td>{s.file_count}</td>
-                        <td>{humanSize(s.total_bytes)}</td>
-                        <td>{s.status === "complete" ? "完整" : "⚠ 不完整"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+
+              {scanning && (
+                <div className="progress cleanup-progress" role="status">
+                  {progress
+                    ? `正在记录：${progress.files} 个文件，${humanSize(progress.bytes)}`
+                    : "正在准备快照…"}
+                  {progress?.current && <div className="current">{progress.current}</div>}
+                </div>
               )}
-              <TrendChart snapshots={snapshots.filter((s) => s.status === "complete")} />
-              {snapshots.length === 0 && (
-                <div className="empty">还没有快照。设定扫描路径后点"扫描并保存快照"，两次记录后即可看到趋势。</div>
+
+              {snapshots.length === 0 && !scanning && (
+                <div className="empty cleanup-empty">
+                  {path
+                    ? "还没有快照。点击“扫描并保存快照”建立第一条记录，保存两次后即可看到趋势。"
+                    : "先选择要跟踪的目录，再回来保存快照。"}
+                  {!path && <button onClick={() => setSection("scan")}>前往扫描目录</button>}
+                </div>
+              )}
+
+              {snapshotStats.latest && (
+                <dl className="cleanup-breakdown snapshot-breakdown" aria-label="最新快照统计">
+                  <div>
+                    <dt>最新占用 <span>#{snapshotStats.latest.id} · {formatSnapshotTime(snapshotStats.latest.recorded_at)}</span></dt>
+                    <dd>{humanSize(snapshotStats.latest.total_bytes)}</dd>
+                  </div>
+                  <div>
+                    <dt>较上次变化 <span>{snapshotStats.delta == null ? "需要两个有效快照" : "相邻有效快照"}</span></dt>
+                    <dd className={snapshotStats.delta == null || snapshotStats.delta === 0 ? "delta-neutral" : snapshotStats.delta > 0 ? "delta-up" : "delta-down"}>
+                      {snapshotStats.delta == null ? "—" : signedSize(snapshotStats.delta)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>有效快照 <span>不完整记录不会进入趋势</span></dt>
+                    <dd>{snapshotStats.complete.length} <span className="metric-total">/ {snapshots.length}</span></dd>
+                  </div>
+                </dl>
+              )}
+
+              {snapshotStats.complete.length > 0 && (
+                <section className="cleanup-section trend-section" aria-labelledby="trend-heading">
+                  <div className="section-heading">
+                    <h2 id="trend-heading">占用趋势</h2>
+                    <span>{snapshotStats.complete.length} 个有效快照</span>
+                  </div>
+                  <p className="section-desc">折线展示总占用；数据点包含快照编号、时间、文件数和大小。</p>
+                  <TrendChart snapshots={snapshotStats.complete} />
+                </section>
+              )}
+
+              {snapshots.length > 0 && (
+                <section className="cleanup-section" aria-labelledby="snapshot-list-heading">
+                  <div className="section-heading">
+                    <h2 id="snapshot-list-heading">快照记录</h2>
+                    <span>最新优先 · 共 {snapshots.length} 条</span>
+                    {snapshots.length >= 2 && (
+                      <button
+                        className="section-action"
+                        onClick={() => {
+                          setOldId(snapshots[snapshots.length - 2].id);
+                          setNewId(snapshots[snapshots.length - 1].id);
+                          setReport(null);
+                          setSection("diff");
+                        }}
+                      >
+                        比较最近两次
+                      </button>
+                    )}
+                  </div>
+                  <p className="section-desc">每条记录包含扫描时的文件总数和总大小；不完整记录可用于排查，但不进入趋势图。</p>
+                  <div className="table-scroll">
+                    <table className="cleanup-table snapshot-table">
+                      <thead>
+                        <tr>
+                          <th>ID</th>
+                          <th>记录时间</th>
+                          <th>根目录</th>
+                          <th className="size-cell">文件数</th>
+                          <th className="size-cell">大小</th>
+                          <th>状态</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {snapshots.slice().reverse().map((s) => (
+                          <tr key={s.id}>
+                            <td>#{s.id}</td>
+                            <td className="snapshot-time">{formatSnapshotTime(s.recorded_at)}</td>
+                            <td className="mono" title={s.root}>{s.root}</td>
+                            <td className="size-cell">{s.file_count.toLocaleString("zh-CN")}</td>
+                            <td className="size-cell">{humanSize(s.total_bytes)}</td>
+                            <td className={s.status === "complete" ? "status-safe" : "status-review"}>
+                              {s.status === "complete" ? "完整" : "不完整"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
               )}
             </section>
           </div>
@@ -750,69 +889,202 @@ export default function App() {
         {section === "diff" && (
           <div className="page" key="diff">
             <h1 className="page-title">差异比较</h1>
-            <p className="page-desc">对比两次快照，新增、删除、增长、缩减一目了然。</p>
-            <section className="panel">
-              <div className="row">
-                <select aria-label="旧快照" value={oldId ?? ""} onChange={(e) => setOldId(Number(e.target.value) || null)}>
-                  <option value="">旧快照…</option>
-                  {snapshots.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      #{s.id}（{s.file_count} 文件）
-                    </option>
-                  ))}
-                </select>
-                <select aria-label="新快照" value={newId ?? ""} onChange={(e) => setNewId(Number(e.target.value) || null)}>
-                  <option value="">新快照…</option>
-                  {snapshots.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      #{s.id}（{s.file_count} 文件）
-                    </option>
-                  ))}
-                </select>
-                <button className="primary" onClick={doDiff} disabled={oldId == null || newId == null}>
-                  比较
-                </button>
-                {report && (
-                  <>
-                    <button onClick={() => exportDiff("json")}>导出 JSON</button>
-                    <button onClick={() => exportDiff("csv")}>导出 CSV</button>
-                  </>
-                )}
-              </div>
-              {report ? (
-                <div>
-                  {report.warnings.map((w, i) => (
-                    <div key={i} className="warn">⚠ {w}</div>
-                  ))}
-                  <div className="summary">
-                    新增 {report.summary.added_files}（+{humanSize(report.summary.added_bytes)}），删除{" "}
-                    {report.summary.removed_files}（-{humanSize(report.summary.removed_bytes)}），增长{" "}
-                    {report.summary.grown_files}，缩减 {report.summary.shrunk_files}；净变化{" "}
-                    {report.summary.net_bytes} B
-                  </div>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>变化</th>
-                        <th>文件</th>
-                        <th>旧大小</th>
-                        <th>新大小</th>
-                      </tr>
-                    </thead>
-                    <tbody key={`${oldId}-${newId}`}>
-                      {report.files.slice(0, 50).map((c) => (
-                        <tr key={c.rel_path}>
-                          <td>{KIND_LABEL[c.kind]}</td>
-                          <td className="mono">{c.rel_path}</td>
-                          <td>{c.old_size == null ? "—" : humanSize(c.old_size)}</td>
-                          <td>{c.new_size == null ? "—" : humanSize(c.new_size)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+            <p className="page-desc">比较两个时点的文件与目录变化，区分新增、删除、增长和缩减。</p>
+            <section className="panel diff-panel" aria-label="快照差异比较">
+              <div className="cleanup-settings">
+                <div className="cleanup-settings-copy">
+                  <h2>比较范围</h2>
+                  <p>旧快照作为基准，新快照作为结果；净变化为正表示占用增加。</p>
                 </div>
-              ) : (
-                <div className="empty">选择两个快照后点"比较"，结果按新增、删除、增长和缩减分类显示。</div>
+                <div className="diff-picker">
+                  <label className="snapshot-select">
+                    <span>旧快照</span>
+                    <select
+                      aria-label="旧快照"
+                      value={oldId ?? ""}
+                      onChange={(e) => {
+                        setOldId(Number(e.target.value) || null);
+                        setReport(null);
+                      }}
+                    >
+                      <option value="">选择基准…</option>
+                      {snapshots.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          #{s.id} · {formatSnapshotTime(s.recorded_at)} · {humanSize(s.total_bytes)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    aria-label="交换新旧快照"
+                    disabled={oldId == null || newId == null}
+                    onClick={() => {
+                      setOldId(newId);
+                      setNewId(oldId);
+                      setReport(null);
+                    }}
+                  >
+                    交换
+                  </button>
+                  <label className="snapshot-select">
+                    <span>新快照</span>
+                    <select
+                      aria-label="新快照"
+                      value={newId ?? ""}
+                      onChange={(e) => {
+                        setNewId(Number(e.target.value) || null);
+                        setReport(null);
+                      }}
+                    >
+                      <option value="">选择结果…</option>
+                      {snapshots.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          #{s.id} · {formatSnapshotTime(s.recorded_at)} · {humanSize(s.total_bytes)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button className="primary" onClick={doDiff} disabled={oldId == null || newId == null || oldId === newId}>
+                    比较
+                  </button>
+                </div>
+              </div>
+
+              {oldId != null && oldId === newId && (
+                <div className="warn selection-warning">请选择两个不同的快照。</div>
+              )}
+
+              {!report && (
+                <div className="empty cleanup-empty">
+                  {snapshots.length < 2
+                    ? "至少需要两个快照才能比较。先保存另一条记录，再回来查看变化。"
+                    : "选择两个不同的快照后点击“比较”，结果会按文件和目录分别展示。"}
+                  {snapshots.length < 2 && <button onClick={() => setSection("snap")}>前往快照与趋势</button>}
+                </div>
+              )}
+
+              {report && (
+                <div className="diff-results">
+                  <div className="action-panel">
+                    <div className="action-main">
+                      <div className="action-figure">
+                        净变化 <b className={report.summary.net_bytes > 0 ? "delta-up" : report.summary.net_bytes < 0 ? "delta-down" : "delta-neutral"}>
+                          {signedSize(report.summary.net_bytes)}
+                        </b>
+                      </div>
+                      <div className="action-sub">
+                        快照 #{oldId} → #{newId} · {report.files.length.toLocaleString("zh-CN")} 个文件发生变化
+                      </div>
+                    </div>
+                    <div className="action-btns">
+                      <button onClick={() => exportDiff("json")}>导出 JSON</button>
+                      <button onClick={() => exportDiff("csv")}>导出 CSV</button>
+                    </div>
+                    <div className="action-note">净变化 = 新增与增长增加的空间 − 删除与缩减释放的空间。</div>
+                  </div>
+
+                  {report.warnings.length > 0 && (
+                    <div className="warning-list" role="status">
+                      {report.warnings.map((w, i) => <div key={i} className="warn">⚠ {w}</div>)}
+                    </div>
+                  )}
+
+                  <dl className="cleanup-breakdown diff-breakdown" aria-label="文件变化分类统计">
+                    <div>
+                      <dt>新增文件 <span>增加占用</span></dt>
+                      <dd>{report.summary.added_files.toLocaleString("zh-CN")} <span>+{humanSize(diffBytes.Added)}</span></dd>
+                    </div>
+                    <div>
+                      <dt>删除文件 <span>释放占用</span></dt>
+                      <dd>{report.summary.removed_files.toLocaleString("zh-CN")} <span>−{humanSize(diffBytes.Removed)}</span></dd>
+                    </div>
+                    <div>
+                      <dt>增长文件 <span>内容体积增加</span></dt>
+                      <dd>{report.summary.grown_files.toLocaleString("zh-CN")} <span>+{humanSize(diffBytes.Grown)}</span></dd>
+                    </div>
+                    <div>
+                      <dt>缩减文件 <span>内容体积减少</span></dt>
+                      <dd>{report.summary.shrunk_files.toLocaleString("zh-CN")} <span>−{humanSize(diffBytes.Shrunk)}</span></dd>
+                    </div>
+                  </dl>
+
+                  <section className="cleanup-section" aria-labelledby="file-diff-heading">
+                    <div className="section-heading">
+                      <h2 id="file-diff-heading">文件变化</h2>
+                      <span>{report.files.length.toLocaleString("zh-CN")} 项</span>
+                    </div>
+                    <p className="section-desc">变化量为新大小减去旧大小；新增文件的旧大小、删除文件的新大小显示为“—”。</p>
+                    {report.files.length > 0 ? (
+                      <div className="table-scroll">
+                        <table className="cleanup-table diff-table">
+                          <thead>
+                            <tr>
+                              <th>变化</th>
+                              <th>文件</th>
+                              <th className="size-cell">变化量</th>
+                              <th className="size-cell">旧大小</th>
+                              <th className="size-cell">新大小</th>
+                            </tr>
+                          </thead>
+                          <tbody key={`${oldId}-${newId}`}>
+                            {report.files.slice(0, 50).map((c) => {
+                              const delta = (c.new_size ?? 0) - (c.old_size ?? 0);
+                              return (
+                                <tr key={c.rel_path}>
+                                  <td className={`change-${c.kind.toLowerCase()}`}>{KIND_LABEL[c.kind]}</td>
+                                  <td className="mono" title={c.rel_path}>{c.rel_path}</td>
+                                  <td className={`size-cell ${delta > 0 ? "delta-up" : delta < 0 ? "delta-down" : "delta-neutral"}`}>{signedSize(delta)}</td>
+                                  <td className="size-cell">{c.old_size == null ? "—" : humanSize(c.old_size)}</td>
+                                  <td className="size-cell">{c.new_size == null ? "—" : humanSize(c.new_size)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="section-empty">两个快照之间没有文件大小或增删变化。</div>
+                    )}
+                    {report.files.length > 50 && (
+                      <div className="summary">仅显示前 50 项，共 {report.files.length.toLocaleString("zh-CN")} 项；导出文件包含完整结果。</div>
+                    )}
+                  </section>
+
+                  <section className="cleanup-section" aria-labelledby="dir-diff-heading">
+                    <div className="section-heading">
+                      <h2 id="dir-diff-heading">目录净变化</h2>
+                      <span>{changedDirs.length.toLocaleString("zh-CN")} 个目录</span>
+                    </div>
+                    <p className="section-desc">按绝对变化量排序，快速定位空间增加或释放最集中的目录。</p>
+                    {changedDirs.length > 0 ? (
+                      <div className="table-scroll">
+                        <table className="cleanup-table dir-diff-table">
+                          <thead>
+                            <tr>
+                              <th>目录</th>
+                              <th className="size-cell">净变化</th>
+                              <th className="size-cell">变化文件数</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {changedDirs.slice(0, 20).map((d) => (
+                              <tr key={d.rel_path}>
+                                <td className="mono" title={d.rel_path}>{d.rel_path || "（根目录直属文件）"}</td>
+                                <td className={`size-cell ${d.net_bytes > 0 ? "delta-up" : d.net_bytes < 0 ? "delta-down" : "delta-neutral"}`}>{signedSize(d.net_bytes)}</td>
+                                <td className="size-cell">{d.changed_files.toLocaleString("zh-CN")}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="section-empty">没有目录级净变化。</div>
+                    )}
+                    {changedDirs.length > 20 && (
+                      <div className="summary">仅显示绝对变化最大的前 20 个目录，共 {changedDirs.length.toLocaleString("zh-CN")} 个。</div>
+                    )}
+                  </section>
+                </div>
               )}
             </section>
           </div>

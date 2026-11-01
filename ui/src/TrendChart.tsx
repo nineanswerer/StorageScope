@@ -7,7 +7,7 @@ function humanSize(bytes: number) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let v = bytes, i = 0;
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return i === 0 ? `${v} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`;
+  return i === 0 ? `${Math.round(v)} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`;
 }
 function fmtTime(sec: number) {
   const d = new Date(sec * 1000);
@@ -19,12 +19,13 @@ export default function TrendChart({ snapshots }: { snapshots: Point[] }) {
   const pts = snapshots.slice().sort((a, b) => a.recorded_at - b.recorded_at);
   if (pts.length === 0) return null;
   if (pts.length === 1) {
-    return <div className="summary">已记录 1 个快照，再保存一次就能看到磁盘膨胀趋势。</div>;
+    return <div className="summary">已记录 1 个有效快照，再保存一次即可看到占用变化。</div>;
   }
 
-  const W = 1000, H = 250, PL = 70, PR = 20, PT = 26, PB = 42;
+  const W = 1000, H = 250, PL = 70, PR = 70, PT = 26, PB = 42;
   const t0 = pts[0].recorded_at, t1 = pts[pts.length - 1].recorded_at;
-  const maxB = Math.max(...pts.map((p) => p.total_bytes)) * 1.08;
+  const maxB = Math.max(1, ...pts.map((p) => p.total_bytes)) * 1.08;
+  const labelEvery = Math.ceil(pts.length / 6);
   const x = (t: number) => PL + (t1 > t0 ? ((t - t0) / (t1 - t0)) * (W - PL - PR) : (W - PL - PR) / 2);
   const y = (b: number) => PT + (1 - b / maxB) * (H - PT - PB);
 
@@ -35,12 +36,12 @@ export default function TrendChart({ snapshots }: { snapshots: Point[] }) {
   return (
     <div>
       <div className="summary">
-        磁盘占用趋势：{pts.length} 个快照，{fmtTime(t0)} → {fmtTime(t1)}，净变化{" "}
-        <b style={{ color: net >= 0 ? "#c79a62" : "#8eb59d" }}>
-          {net >= 0 ? "+" : ""}{humanSize(Math.abs(net))}
+        {fmtTime(t0)} → {fmtTime(t1)} · 净变化{" "}
+        <b style={{ color: net > 0 ? "#c79a62" : net < 0 ? "#8eb59d" : "#a6adb5" }}>
+          {net > 0 ? "+" : net < 0 ? "−" : ""}{humanSize(Math.abs(net))}
         </b>
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="hier-svg">
+      <svg viewBox={`0 0 ${W} ${H}`} className="hier-svg" role="img" aria-label={`快照占用趋势，净变化 ${net} 字节`}>
         {/* Y 轴网格与刻度 */}
         {[0, 0.5, 1].map((f) => (
           <g key={f}>
@@ -52,8 +53,8 @@ export default function TrendChart({ snapshots }: { snapshots: Point[] }) {
         ))}
         <path d={area} fill="rgba(142, 169, 196, 0.10)" />
         <path d={line} fill="none" stroke="#8ea9c4" strokeWidth="2" />
-        {/* 段间净增减标注 */}
-        {pts.slice(1).map((p, i) => {
+        {/* 少量快照时标出相邻净增减，避免密集标签互相遮挡。 */}
+        {pts.length <= 8 && pts.slice(1).map((p, i) => {
           const prev = pts[i];
           const d = p.total_bytes - prev.total_bytes;
           const mx = (x(prev.recorded_at) + x(p.recorded_at)) / 2;
@@ -64,18 +65,22 @@ export default function TrendChart({ snapshots }: { snapshots: Point[] }) {
             </text>
           );
         })}
-        {/* 数据点 */}
-        {pts.map((p) => (
+        {/* 数据点保留全部快照，时间刻度按密度抽稀。 */}
+        {pts.map((p, i) => (
           <g key={p.id}>
             <circle cx={x(p.recorded_at)} cy={y(p.total_bytes)} r={4.5} fill="#8ea9c4" stroke="#121315" strokeWidth="1.5">
               <title>{`快照 #${p.id} · ${fmtTime(p.recorded_at)}\n${humanSize(p.total_bytes)} · ${p.file_count} 文件`}</title>
             </circle>
-            <text x={x(p.recorded_at)} y={H - 22} textAnchor="middle" fill="#a6adb5" fontSize="11">
-              {fmtTime(p.recorded_at)}
-            </text>
-            <text x={x(p.recorded_at)} y={H - 8} textAnchor="middle" fill="#808993" fontSize="10">
-              #{p.id}
-            </text>
+            {(i % labelEvery === 0 || i === pts.length - 1) && (
+              <>
+                <text x={x(p.recorded_at)} y={H - 22} textAnchor="middle" fill="#a6adb5" fontSize="11">
+                  {fmtTime(p.recorded_at)}
+                </text>
+                <text x={x(p.recorded_at)} y={H - 8} textAnchor="middle" fill="#808993" fontSize="10">
+                  #{p.id}
+                </text>
+              </>
+            )}
           </g>
         ))}
       </svg>

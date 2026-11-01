@@ -282,6 +282,40 @@ tbody tr:hover { background: var(--surface-2); }
 
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
+/* ---- 快照趋势与差异比较 ---- */
+
+.db-field { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.db-field input { width: 260px; min-width: 180px; }
+.snapshot-breakdown { margin-top: 4px; }
+.metric-total { color: var(--faint); font-size: 12px; }
+.delta-up { color: var(--warning); }
+.delta-down { color: var(--success); }
+.delta-neutral { color: var(--muted); }
+.action-figure b.delta-up, .cleanup-breakdown dd.delta-up { color: var(--warning); }
+.action-figure b.delta-down, .cleanup-breakdown dd.delta-down { color: var(--success); }
+.action-figure b.delta-neutral, .cleanup-breakdown dd.delta-neutral { color: var(--muted); }
+.snapshot-table { min-width: 940px; }
+.snapshot-table th:nth-child(1) { width: 64px; }
+.snapshot-table th:nth-child(2) { width: 172px; }
+.snapshot-table th:nth-child(4), .snapshot-table th:nth-child(5) { width: 112px; }
+.snapshot-table th:nth-child(6) { width: 82px; }
+.snapshot-time { white-space: nowrap; color: var(--muted); }
+.trend-section .hier-svg { display: block; }
+
+.diff-picker { display: flex; align-items: flex-end; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.snapshot-select { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
+.snapshot-select select { width: 245px; min-width: 0; }
+.selection-warning { margin: 0 0 14px; }
+.warning-list { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.diff-breakdown { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.diff-breakdown dd span { margin-left: 6px; color: var(--faint); font-size: 12px; }
+.diff-table { min-width: 850px; }
+.diff-table th:nth-child(1) { width: 76px; }
+.dir-diff-table { min-width: 600px; }
+.dir-diff-table th:nth-child(3) { width: 130px; }
+.change-added, .change-grown { color: var(--warning); }
+.change-removed, .change-shrunk { color: var(--success); }
+
 /* ---- 扫描任务与结果 ---- */
 
 .workflow-nav { display: flex; flex-direction: column; gap: 2px; }
@@ -362,6 +396,10 @@ td.mono { overflow-wrap: anywhere; }
   .cleanup-settings { align-items: flex-start; flex-direction: column; }
   .cleanup-controls { justify-content: flex-start; }
   .section-heading { flex-wrap: wrap; }
+  .diff-picker { justify-content: flex-start; }
+  .diff-breakdown { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .diff-breakdown > div:nth-child(n+3) { border-top: 1px solid var(--line); }
+  .diff-breakdown > div:nth-child(3) { border-left: none; }
 }
 
 @media (max-width: 720px) {
@@ -380,6 +418,11 @@ td.mono { overflow-wrap: anywhere; }
   .selection-bar { align-items: flex-start; flex-direction: column; }
   .action-figure b { display: block; margin: 4px 0 0; }
   .section-action { width: 100%; margin-left: 0; }
+  .db-field { align-items: flex-start; flex-direction: column; width: 100%; }
+  .db-field input { width: 100%; }
+  .diff-picker { align-items: stretch; flex-direction: column; }
+  .snapshot-select select { width: 100%; }
+  .diff-picker button { align-self: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {
