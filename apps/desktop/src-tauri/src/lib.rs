@@ -219,6 +219,40 @@ async fn move_to_trash(root: String, rel_paths: Vec<String>) -> Result<serde_jso
     .map_err(|e| e.to_string())?
 }
 
+/// 空间合并（M10）：把重复文件组合并为硬链接，路径不动、空间释放。
+/// 合并前逐组重新校验全文哈希；执行期间通过 merge-progress 推送进度。
+#[tauri::command]
+async fn merge_duplicates(
+    app: AppHandle,
+    root: String,
+    groups: Vec<storagescope_core::rules::DupeGroup>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root_path = Path::new(&root)
+            .canonicalize()
+            .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
+        // 路径逃逸防护：所有组成员必须仍在扫描根目录内
+        for g in &groups {
+            for rel in &g.files {
+                let c = root_path
+                    .join(rel)
+                    .canonicalize()
+                    .map_err(|e| format!("{rel}：无法解析（{e}），已中止合并"))?;
+                if !c.starts_with(&root_path) {
+                    return Err(format!("{rel}：目标不在扫描根目录内，已拒绝"));
+                }
+            }
+        }
+        let total: usize = groups.iter().map(|g| g.files.len().saturating_sub(1)).sum();
+        let _ = app.emit("merge-progress", serde_json::json!({ "done": 0, "total": total }));
+        let report = storagescope_core::dedup::merge_duplicates(&root_path, &groups);
+        let _ = app.emit("merge-progress", serde_json::json!({ "done": total, "total": total }));
+        serde_json::to_value(report).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -232,6 +266,7 @@ pub fn run() {
             diff_snapshots,
             analyze_cleanup,
             move_to_trash,
+            merge_duplicates,
             export_tree,
             export_diff,
         ])

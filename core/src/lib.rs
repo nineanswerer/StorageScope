@@ -2,6 +2,7 @@
 //! 不依赖任何桌面 UI，可独立通过 CLI 与自动化测试验证。
 
 pub mod cleanup;
+pub mod dedup;
 pub mod diff;
 pub mod export;
 pub mod fixtures;

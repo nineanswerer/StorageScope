@@ -168,6 +168,58 @@ export default function App() {
   const [viewMode, setViewMode] = useState<"list" | "hier" | "city" | "tree3d">("list");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [trashing, setTrashing] = useState(false);
+  const [merging, setMerging] = useState(false);
+  const [mergeProgress, setMergeProgress] = useState<AnalyzeProgress | null>(null);
+
+  type MergeReport = {
+    results: { path: string; status: string; detail: string | null }[];
+    merged_files: number;
+    freed_bytes: number;
+    skipped: number;
+    failed: number;
+  };
+
+  // M10 空间合并：重复副本合并为硬链接，路径不动、空间真实释放
+  async function doMerge() {
+    if (!analysis || analysis.dupe_groups.length === 0) return;
+    const totalWasted = analysis.dupe_groups.reduce((s, g) => s + g.wasted, 0);
+    if (!window.confirm(
+      `把 ${analysis.dupe_groups.length} 组重复文件合并为硬链接？\n预计释放 ${humanSize(totalWasted)}。\n\n所有文件路径保留、程序照常运行；合并前逐组重新校验内容，失败自动回滚。`
+    )) return;
+    setMerging(true);
+    setMessage("");
+    setMergeProgress(null);
+    try {
+      const r = await invoke<MergeReport>("merge_duplicates", {
+        root: path,
+        groups: analysis.dupe_groups,
+      });
+      const mergedPaths = new Set(r.results.filter((x) => x.status === "merged").map((x) => x.path));
+      setAnalysis({
+        ...analysis,
+        dupe_groups: analysis.dupe_groups
+          .map((g) => {
+            const files = g.files.filter((p, i) => i === 0 || !mergedPaths.has(p));
+            return { ...g, files, wasted: g.size * Math.max(0, files.length - 1) };
+          })
+          .filter((g) => g.files.length > 1),
+      });
+      const failDetail = r.results
+        .filter((x) => x.status !== "merged" && x.detail)
+        .slice(0, 5)
+        .map((x) => `${x.path}：${x.detail}`)
+        .join("\n");
+      setMessage(
+        `空间合并完成：合并 ${r.merged_files} 个副本，实际释放 ${humanSize(r.freed_bytes)}` +
+          `${r.skipped > 0 ? `；${r.skipped} 个内容已变化跳过` : ""}${r.failed > 0 ? `；${r.failed} 个失败` : ""}` +
+          (failDetail ? `\n${failDetail}` : "")
+      );
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setMerging(false);
+    }
+  }
 
   // 自动快照：应用开着期间按间隔保存；正在扫描时跳过本轮
   useEffect(() => {
@@ -277,9 +329,11 @@ export default function App() {
     const un2 = listen<AnalyzeProgress>("analyze-progress", (e) =>
       setAnalyzeProgress(e.payload)
     );
+    const un3 = listen<AnalyzeProgress>("merge-progress", (e) => setMergeProgress(e.payload));
     return () => {
       un.then((f) => f());
       un2.then((f) => f());
+      un3.then((f) => f());
     };
   }, []);
 
@@ -766,6 +820,20 @@ export default function App() {
                   {!skipDupes && (
                     <>
                       <h3>重复文件组（{analysis.dupe_groups.length} 组）</h3>
+                      {analysis.dupe_groups.length > 0 && (
+                        <div className="row">
+                          <button className="primary" onClick={doMerge} disabled={merging}>
+                            {merging
+                              ? mergeProgress
+                                ? `合并校验中 ${mergeProgress.done} / ${mergeProgress.total}…`
+                                : "合并中…"
+                              : `空间合并（预计释放 ${humanSize(analysis.dupe_groups.reduce((s, g) => s + g.wasted, 0))}）`}
+                          </button>
+                          <span className="summary" style={{ margin: 0 }}>
+                            硬链接合并：所有路径保留、程序照跑，空间真实释放；合并前重新校验，失败回滚。
+                          </span>
+                        </div>
+                      )}
                       {analysis.dupe_groups.length === 0 ? (
                         <div className="summary">未发现内容完全相同的重复文件</div>
                       ) : (

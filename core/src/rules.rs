@@ -490,7 +490,12 @@ fn head_fingerprint(root: &Path, f: &FileEntry) -> std::io::Result<u64> {
 }
 
 fn full_hash(root: &Path, f: &FileEntry) -> std::io::Result<u64> {
-    let mut file = std::fs::File::open(root.join(f.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR)))?;
+    hash_file_for_merge(&root.join(f.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR)))
+}
+
+/// 绝对路径文件的全文 xxHash64。空间合并（dedup）执行前校验复用。
+pub fn hash_file_for_merge(path: &Path) -> std::io::Result<u64> {
+    let mut file = std::fs::File::open(path)?;
     let mut h = Xxh64::new(0);
     let mut buf = vec![0u8; 1024 * 1024];
     loop {
