@@ -251,3 +251,36 @@ tr.sounder { animation: sounder 2.4s ease-out; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ---- 打捞方案行动区（一键安全释放） ---- */
+
+.action-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  background: var(--sea-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin: 12px 0 6px;
+}
+.action-main { flex: 1; min-width: 220px; }
+.action-figure { font-size: 15px; color: var(--muted); }
+.action-figure b { color: var(--cyan); font-size: 22px; font-weight: 650; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.action-sub { font-size: 12px; color: var(--faint); margin-top: 4px; }
+.action-btns { display: flex; gap: 10px; flex-wrap: wrap; }
+.action-note { flex-basis: 100%; font-size: 12px; color: var(--faint); }
+
+/* ---- 表格行内操作 ---- */
+
+.row-link {
+  color: var(--cyan);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: none;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+.row-link + .row-link { margin-left: 10px; }
+.row-link:hover { text-decoration: underline; }

@@ -221,6 +221,90 @@ export default function App() {
     }
   }
 
+  // 一键安全释放（M11）：零决策路径——安全缓存进回收站 + 重复文件自动硬链接合并。
+  // 需要人工判断的项（ReviewAdvised、大文件）绝不动。
+  const [quickRunning, setQuickRunning] = useState(false);
+  async function doQuickRelease() {
+    if (!analysis) return;
+    const safeHits = analysis.cache_hits.filter((h) => h.safety === "SafeToDelete");
+    const cacheBytes = safeHits.reduce((s, h) => s + h.size, 0);
+    const dupeBytes = analysis.dupe_groups.reduce((s, g) => s + g.wasted, 0);
+    if (safeHits.length === 0 && analysis.dupe_groups.length === 0) {
+      setMessage("没有可安全释放的项（无安全级缓存、无重复文件）。");
+      return;
+    }
+    if (!window.confirm(
+      `一键安全释放约 ${humanSize(cacheBytes + dupeBytes)}？\n\n` +
+        `· ${safeHits.length} 个安全级缓存目录（${humanSize(cacheBytes)}）→ 回收站\n` +
+        `· ${analysis.dupe_groups.length} 组重复文件（${humanSize(dupeBytes)}）→ 硬链接合并，路径不动\n\n` +
+        `需要你判断的项目不会动。`
+    )) return;
+    setQuickRunning(true);
+    setMessage("");
+    const notes: string[] = [];
+    let next = analysis;
+    try {
+      // 先合并（不删数据），再清缓存
+      if (analysis.dupe_groups.length > 0) {
+        const r = await invoke<MergeReport>("merge_duplicates", {
+          root: path,
+          groups: analysis.dupe_groups,
+        });
+        notes.push(`合并 ${r.merged_files} 个副本，释放 ${humanSize(r.freed_bytes)}`);
+        const mergedPaths = new Set(r.results.filter((x) => x.status === "merged").map((x) => x.path));
+        next = {
+          ...next,
+          dupe_groups: next.dupe_groups
+            .map((g) => {
+              const files = g.files.filter((p, i) => i === 0 || !mergedPaths.has(p));
+              return { ...g, files, wasted: g.size * Math.max(0, files.length - 1) };
+            })
+            .filter((g) => g.files.length > 1),
+        };
+        if (r.failed > 0 || r.skipped > 0) notes.push(`${r.skipped} 个已变化跳过、${r.failed} 个失败`);
+      }
+      if (safeHits.length > 0) {
+        const r = await invoke<TrashReport>("move_to_trash", {
+          root: path,
+          relPaths: safeHits.map((h) => h.rel_path),
+        });
+        notes.push(`${r.succeeded} 个缓存目录进回收站`);
+        const gone = new Set(r.results.filter((x) => x.ok).map((x) => x.path));
+        const isGone = (rel: string) =>
+          [...gone].some((p) => p.replace(/\\/g, "/").endsWith(rel.replace(/\\/g, "/")));
+        next = { ...next, cache_hits: next.cache_hits.filter((h) => !isGone(h.rel_path)) };
+        if (r.failed > 0) notes.push(`${r.failed} 个缓存删除失败`);
+      }
+      setAnalysis(next);
+      setSelected(new Set());
+      setMessage(`一键安全释放完成：${notes.join("；")}`);
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setQuickRunning(false);
+    }
+  }
+
+  // 操作闭环：定位到资源管理器 / 复制绝对路径
+  function absOf(rel: string) {
+    return `${path.replace(/[\\/]+$/, "")}\\${rel.replace(/\//g, "\\")}`;
+  }
+  async function reveal(rel: string) {
+    try {
+      await invoke("reveal_in_explorer", { root: path, relPath: rel });
+    } catch (e) {
+      setMessage(String(e));
+    }
+  }
+  async function copyPath(rel: string) {
+    try {
+      await navigator.clipboard.writeText(absOf(rel));
+      setMessage(`已复制路径：${absOf(rel)}`);
+    } catch {
+      setMessage(`复制失败，请手动复制：${absOf(rel)}`);
+    }
+  }
+
   // 自动快照：应用开着期间按间隔保存；正在扫描时跳过本轮
   useEffect(() => {
     if (autoMinutes <= 0 || !path || !db) return;
@@ -736,35 +820,52 @@ export default function App() {
               )}
               {analysis && (
                 <div>
-                  <div className="summary">
-                    估算可回收：<b>{humanSize(analysis.reclaimable_bytes)}</b>
-                    （安全级缓存 + 重复冗余，为估算上限）
-                    {!skipDupes &&
-                      `；哈希校验读取 ${humanSize(analysis.hashed_bytes)}，失败 ${analysis.hash_errors} 个文件`}
+                  <div className="action-panel">
+                    <div className="action-main">
+                      <div className="action-figure">
+                        估算可回收 <b>{humanSize(analysis.reclaimable_bytes)}</b>
+                      </div>
+                      <div className="action-sub">
+                        安全级缓存 + 重复冗余（为估算上限）
+                        {!skipDupes &&
+                          `；哈希校验读取 ${humanSize(analysis.hashed_bytes)}，失败 ${analysis.hash_errors} 个文件`}
+                      </div>
+                    </div>
+                    <div className="action-btns">
+                      <button
+                        className="primary"
+                        onClick={doQuickRelease}
+                        disabled={quickRunning || merging || trashing}
+                      >
+                        {quickRunning ? "正在安全释放…" : "一键安全释放"}
+                      </button>
+                      {tree && (
+                        <button
+                          onClick={() => {
+                            setViewMode("tree3d");
+                            setSection("structure");
+                          }}
+                        >
+                          在 3D 树中查看（橙色 = 可清理）
+                        </button>
+                      )}
+                    </div>
+                    <div className="action-note">
+                      安全缓存进回收站、重复文件自动合并为硬链接，无需逐项判断；需要你把关的项留在下方手动处理。
+                    </div>
                   </div>
 
                   <div className="danger-zone">
                     <button
                       className="danger"
                       onClick={doTrash}
-                      disabled={selected.size === 0 || trashing}
+                      disabled={selected.size === 0 || trashing || quickRunning}
                     >
                       {trashing ? "正在移入回收站…" : `移入回收站（${selected.size} 项，约 ${humanSize(selectedBytes())}）`}
                     </button>
                     <span className="summary" style={{ margin: 0 }}>
-                      勾选要清理的项；重复文件组始终保留第一份。
+                      手动模式：勾选要清理的项；重复文件组始终保留第一份。
                     </span>
-                    <span style={{ flex: 1 }} />
-                    {tree && (
-                      <button
-                        onClick={() => {
-                          setViewMode("tree3d");
-                          setSection("structure");
-                        }}
-                      >
-                        在 3D 树中查看（橙色 = 可清理）
-                      </button>
-                    )}
                   </div>
 
                   <h3>缓存 / 可清理项（{analysis.cache_hits.length}）</h3>
@@ -777,6 +878,7 @@ export default function App() {
                           <th>目录</th>
                           <th>建议</th>
                           <th>规则</th>
+                          <th>操作</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -793,6 +895,10 @@ export default function App() {
                             <td className="mono">{h.rel_path}</td>
                             <td>{h.safety === "SafeToDelete" ? "可安全清理" : "建议确认"}</td>
                             <td title={h.reason}>{h.rule_name}</td>
+                            <td>
+                              <a className="row-link" onClick={() => reveal(h.rel_path)}>定位</a>
+                              <a className="row-link" onClick={() => copyPath(h.rel_path)}>复制路径</a>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -805,6 +911,7 @@ export default function App() {
                       <tr>
                         <th>大小</th>
                         <th>文件</th>
+                        <th>操作</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -812,6 +919,10 @@ export default function App() {
                         <tr key={f.rel_path}>
                           <td>{humanSize(f.size)}</td>
                           <td className="mono">{f.rel_path}</td>
+                          <td>
+                            <a className="row-link" onClick={() => reveal(f.rel_path)}>定位</a>
+                            <a className="row-link" onClick={() => copyPath(f.rel_path)}>复制路径</a>
+                          </td>
                         </tr>
                       ))}
                     </tbody>

@@ -253,6 +253,22 @@ async fn merge_duplicates(
     .map_err(|e| e.to_string())?
 }
 
+/// 操作闭环：在资源管理器中定位文件（选中）或打开目录。
+#[tauri::command]
+fn reveal_in_explorer(root: String, rel_path: String) -> Result<(), String> {
+    let abs = Path::new(&root).join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    if !abs.exists() {
+        return Err(format!("路径不存在：{}", abs.display()));
+    }
+    let mut cmd = std::process::Command::new("explorer");
+    if abs.is_dir() {
+        cmd.arg(abs);
+    } else {
+        cmd.arg(format!("/select,{}", abs.display()));
+    }
+    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -267,6 +283,7 @@ pub fn run() {
             analyze_cleanup,
             move_to_trash,
             merge_duplicates,
+            reveal_in_explorer,
             export_tree,
             export_diff,
         ])
