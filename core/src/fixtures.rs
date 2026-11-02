@@ -92,7 +92,11 @@ pub fn generate(root: &Path) -> io::Result<FixtureSummary> {
 
 /// 生成大型基准数据集：`dirs` 个子目录，每个 `files_per_dir` 个文件，
 /// 文件大小按确定公式分布。用于性能基准，不用于黄金正确性。
-pub fn generate_large(root: &Path, dirs: usize, files_per_dir: usize) -> io::Result<FixtureSummary> {
+pub fn generate_large(
+    root: &Path,
+    dirs: usize,
+    files_per_dir: usize,
+) -> io::Result<FixtureSummary> {
     let mut s = FixtureSummary {
         file_count: 0,
         dir_count: 0,

@@ -4,11 +4,15 @@ use std::collections::{BTreeMap, HashMap};
 
 fn content_type(ext: Option<&str>) -> &'static str {
     match ext.unwrap_or("") {
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" | "avif" | "heic" | "heif" => "images",
+        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" | "avif" | "heic"
+        | "heif" => "images",
         "mp4" | "mov" | "mkv" | "avi" | "webm" | "flv" | "wmv" | "m4v" => "video",
         "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "wma" => "audio",
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "json" | "html" | "css" | "scss" | "py" | "java" | "c" | "h" | "cpp" | "hpp" | "cs" | "go" | "rb" | "php" | "sql" | "sh" | "ps1" | "bat" | "yaml" | "yml" | "toml" | "xml" | "vue" => "code",
-        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "md" | "rtf" | "csv" | "epub" => "documents",
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "json" | "html" | "css" | "scss" | "py" | "java"
+        | "c" | "h" | "cpp" | "hpp" | "cs" | "go" | "rb" | "php" | "sql" | "sh" | "ps1" | "bat"
+        | "yaml" | "yml" | "toml" | "xml" | "vue" => "code",
+        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "md" | "rtf" | "csv"
+        | "epub" => "documents",
         "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" | "zst" => "archives",
         "exe" | "msi" | "msix" | "appx" | "dmg" | "pkg" | "deb" | "rpm" | "apk" => "installers",
         _ => "other",
@@ -120,7 +124,15 @@ pub fn aggregate(outcome: &ScanOutcome) -> DirStat {
             .map(|v| {
                 v.iter()
                     .map(|(p, n)| {
-                        build(p, n, children_of, total_size, total_files, total_types, error_dirs)
+                        build(
+                            p,
+                            n,
+                            children_of,
+                            total_size,
+                            total_files,
+                            total_types,
+                            error_dirs,
+                        )
                     })
                     .collect()
             })
@@ -185,8 +197,14 @@ mod tests {
         let outcome = ScanOutcome {
             root: "/root".to_string(),
             dirs: vec![
-                DirEntry { rel_path: "media".to_string(), name: "media".to_string() },
-                DirEntry { rel_path: "media/photos".to_string(), name: "photos".to_string() },
+                DirEntry {
+                    rel_path: "media".to_string(),
+                    name: "media".to_string(),
+                },
+                DirEntry {
+                    rel_path: "media/photos".to_string(),
+                    name: "photos".to_string(),
+                },
             ],
             files: vec![
                 file("media/photos/a.jpg", 10, "jpg"),

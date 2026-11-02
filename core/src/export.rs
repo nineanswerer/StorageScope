@@ -31,7 +31,8 @@ fn flatten_tree(stat: &DirStat, rows: &mut Vec<String>) {
 }
 
 pub fn tree_csv(tree: &DirStat) -> String {
-    let mut rows = vec!["rel_path,name,total_size_bytes,file_count,subdir_count,has_errors".to_string()];
+    let mut rows =
+        vec!["rel_path,name,total_size_bytes,file_count,subdir_count,has_errors".to_string()];
     flatten_tree(tree, &mut rows);
     rows.join("\n")
 }

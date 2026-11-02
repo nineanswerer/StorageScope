@@ -41,13 +41,25 @@ where
             trash::delete(path).map_err(|e| e.to_string())
         };
         match result {
-            Ok(()) => results.push(TrashItemResult { path: display, ok: true, error: None }),
-            Err(e) => results.push(TrashItemResult { path: display, ok: false, error: Some(e) }),
+            Ok(()) => results.push(TrashItemResult {
+                path: display,
+                ok: true,
+                error: None,
+            }),
+            Err(e) => results.push(TrashItemResult {
+                path: display,
+                ok: false,
+                error: Some(e),
+            }),
         }
     }
     let succeeded = results.iter().filter(|r| r.ok).count();
     let failed = results.len() - succeeded;
-    TrashReport { results, succeeded, failed }
+    TrashReport {
+        results,
+        succeeded,
+        failed,
+    }
 }
 
 fn is_root(path: &Path) -> bool {
@@ -70,7 +82,11 @@ mod tests {
         let root = if cfg!(windows) { "C:\\" } else { "/" };
         let report = move_to_trash([root]);
         assert_eq!(report.failed, 1);
-        assert!(report.results[0].error.as_deref().unwrap_or("").contains("根目录"));
+        assert!(report.results[0]
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("根目录"));
     }
 
     #[test]
@@ -79,7 +95,11 @@ mod tests {
         let file = dir.path().join("junk.bin");
         fs::write(&file, vec![0u8; 128]).unwrap();
         let report = move_to_trash([&file]);
-        assert_eq!(report.succeeded, 1, "失败原因: {:?}", report.results[0].error);
+        assert_eq!(
+            report.succeeded, 1,
+            "失败原因: {:?}",
+            report.results[0].error
+        );
         assert!(!file.exists(), "原位置文件应已消失（进入回收站）");
     }
 }

@@ -87,27 +87,19 @@ pub fn diff(conn: &Connection, old_id: i64, new_id: i64) -> Result<DiffReport, S
         ));
     }
     if old_m.status != "complete" {
-        warnings.push(format!(
-            "旧快照 #{old_id} 存在扫描异常，差异结果可能不完整"
-        ));
+        warnings.push(format!("旧快照 #{old_id} 存在扫描异常，差异结果可能不完整"));
     }
     if new_m.status != "complete" {
-        warnings.push(format!(
-            "新快照 #{new_id} 存在扫描异常，差异结果可能不完整"
-        ));
+        warnings.push(format!("新快照 #{new_id} 存在扫描异常，差异结果可能不完整"));
     }
 
     // 2. 按规范化相对路径匹配
     let old_files = snapshot::load_files(conn, old_id).map_err(|e| e.to_string())?;
     let new_files = snapshot::load_files(conn, new_id).map_err(|e| e.to_string())?;
-    let old_map: HashMap<String, &FileEntry> = old_files
-        .iter()
-        .map(|f| (key(&f.rel_path), f))
-        .collect();
-    let new_map: HashMap<String, &FileEntry> = new_files
-        .iter()
-        .map(|f| (key(&f.rel_path), f))
-        .collect();
+    let old_map: HashMap<String, &FileEntry> =
+        old_files.iter().map(|f| (key(&f.rel_path), f)).collect();
+    let new_map: HashMap<String, &FileEntry> =
+        new_files.iter().map(|f| (key(&f.rel_path), f)).collect();
 
     let mut files: Vec<FileChange> = Vec::new();
     for (k, nf) in &new_map {
@@ -221,7 +213,7 @@ pub fn diff(conn: &Connection, old_id: i64, new_id: i64) -> Result<DiffReport, S
             .map(|c| match c.kind {
                 ChangeKind::Removed => c.old_size.unwrap_or(0),
                 ChangeKind::Shrunk => c.old_size.unwrap_or(0) - c.new_size.unwrap_or(0),
-                _ => 0
+                _ => 0,
             })
             .sum(),
         net_bytes: new_m.total_bytes - old_m.total_bytes,

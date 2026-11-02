@@ -144,44 +144,38 @@ impl Scanner {
                         });
                         stack.push(path);
                     }
-                    Ok(ft) if ft.is_file() => {
-                        match entry.metadata() {
-                            Ok(md) => {
-                                let size = md.len();
-                                bytes += size;
-                                files.push(FileEntry {
-                                    rel_path: rel,
-                                    name,
-                                    size,
-                                    modified: md
-                                        .modified()
-                                        .ok()
-                                        .and_then(|t| {
-                                            t.duration_since(std::time::UNIX_EPOCH).ok()
-                                        })
-                                        .map(|d| d.as_secs() as i64),
-                                    ext: path
-                                        .extension()
-                                        .map(|e| e.to_string_lossy().to_lowercase()),
-                                });
-                                if (files.len() as u64).is_multiple_of(self.config.progress_every) {
-                                    on_progress(
-                                        Progress {
-                                            files: files.len() as u64,
-                                            bytes,
-                                            errors: errors.len() as u64,
-                                        },
-                                        &path,
-                                    );
-                                }
+                    Ok(ft) if ft.is_file() => match entry.metadata() {
+                        Ok(md) => {
+                            let size = md.len();
+                            bytes += size;
+                            files.push(FileEntry {
+                                rel_path: rel,
+                                name,
+                                size,
+                                modified: md
+                                    .modified()
+                                    .ok()
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map(|d| d.as_secs() as i64),
+                                ext: path.extension().map(|e| e.to_string_lossy().to_lowercase()),
+                            });
+                            if (files.len() as u64).is_multiple_of(self.config.progress_every) {
+                                on_progress(
+                                    Progress {
+                                        files: files.len() as u64,
+                                        bytes,
+                                        errors: errors.len() as u64,
+                                    },
+                                    &path,
+                                );
                             }
-                            Err(e) => errors.push(ScanError {
-                                path: path.display().to_string(),
-                                category: ErrorCategory::MetadataFailed,
-                                message: e.to_string(),
-                            }),
                         }
-                    }
+                        Err(e) => errors.push(ScanError {
+                            path: path.display().to_string(),
+                            category: ErrorCategory::MetadataFailed,
+                            message: e.to_string(),
+                        }),
+                    },
                     _ => {} // 特殊文件（管道、套接字等）忽略
                 }
             }

@@ -10,7 +10,9 @@ fn scan_and_save(root: &Path, db: &Path) -> i64 {
     let scanner = Scanner::new(ScanConfig::default());
     let outcome = scanner.scan(root, |_, _| {});
     let conn = snapshot::open(db).unwrap();
-    snapshot::save(&conn, &outcome).unwrap().expect("完整扫描应入库")
+    snapshot::save(&conn, &outcome)
+        .unwrap()
+        .expect("完整扫描应入库")
 }
 
 #[test]
@@ -132,7 +134,11 @@ fn cancelled_scan_refused_to_save() {
     assert!(outcome.cancelled);
 
     let conn = snapshot::open(&db).unwrap();
-    assert_eq!(snapshot::save(&conn, &outcome).unwrap(), None, "取消的快照不得入库");
+    assert_eq!(
+        snapshot::save(&conn, &outcome).unwrap(),
+        None,
+        "取消的快照不得入库"
+    );
     assert!(snapshot::list(&conn).unwrap().is_empty());
 }
 
