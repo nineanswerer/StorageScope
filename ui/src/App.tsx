@@ -8,7 +8,17 @@ import HierarchyViews from "./HierarchyViews";
 import Tree3DView from "./Tree3DView";
 import TrendChart from "./TrendChart";
 import CleanupList from "./CleanupList";
-import { effectiveSelectedPaths, orderedDupeFiles, selectedCleanupBytes, updateDupeKeepSelection } from "./cleanupModel";
+import {
+  effectiveSelectedPaths,
+  normalizeCleanupPath,
+  orderedDupeFiles,
+  protectionReason,
+  reconcileAnalysisAfterCleanup,
+  selectedCleanupBytes,
+  updateDupeKeepSelection,
+  withoutProtectedPaths,
+} from "./cleanupModel";
+import type { AnalysisReport, DupeGroup } from "./cleanupModel";
 import "./App.css";
 
 type DirStat = {
@@ -63,27 +73,6 @@ type DiffReport = {
 };
 
 type Progress = { files: number; bytes: number; errors: number; current: string };
-
-type RuleHit = {
-  rule_id: string;
-  rule_name: string;
-  rel_path: string;
-  size: number;
-  file_count: number;
-  reason: string;
-  safety: "SafeToDelete" | "ReviewAdvised";
-};
-
-type DupeGroup = { size: number; hash: string; files: string[]; wasted: number };
-
-type AnalysisReport = {
-  cache_hits: RuleHit[];
-  big_files: { rel_path: string; name: string; size: number }[];
-  dupe_groups: DupeGroup[];
-  reclaimable_bytes: number;
-  hashed_bytes: number;
-  hash_errors: number;
-};
 
 type AnalyzeProgress = { done: number; total: number };
 
@@ -222,130 +211,82 @@ export default function App() {
   const [trashing, setTrashing] = useState(false);
   const [merging, setMerging] = useState(false);
   const [mergeProgress, setMergeProgress] = useState<AnalyzeProgress | null>(null);
+  const [referenceDirs, setReferenceDirs] = useState<string[]>([]);
+  const [excludedDirs, setExcludedDirs] = useState<string[]>([]);
+  const [protectionInput, setProtectionInput] = useState("");
 
   type MergeReport = {
-    results: { path: string; status: string; detail: string | null }[];
+    results: { path: string; status: string; detail: string | null; verified_freed_bytes: number | null }[];
     merged_files: number;
-    freed_bytes: number;
+    merged_logical_bytes: number;
+    verified_freed_bytes: number | null;
     skipped: number;
     failed: number;
   };
+  type CleanupExecutionReport = {
+    results: { path: string; status: string; logical_bytes: number; detail: string | null }[];
+    succeeded: number;
+    skipped: number;
+    failed: number;
+    selected_logical_bytes: number;
+    pending_recycle_bin_bytes: number;
+    verified_freed_bytes: number | null;
+  };
+  const [lastCleanupResult, setLastCleanupResult] = useState<
+    | { kind: "trash"; report: CleanupExecutionReport }
+    | { kind: "merge"; report: MergeReport }
+    | null
+  >(null);
 
-  // M10 空间合并：重复副本合并为硬链接，路径不动、空间真实释放
   async function doMerge() {
-    if (!analysis || analysis.dupe_groups.length === 0) return;
-    const totalWasted = analysis.dupe_groups.reduce((s, g) => s + g.wasted, 0);
+    if (!analysis || analysis.dupe_groups.length === 0 || scanning || analyzing || trashing || merging) return;
+    const groups = analysis.dupe_groups.map((group) => ({
+      ...group,
+      files: orderedDupeFiles(group, dupeKeep),
+    }));
+    for (const group of groups) {
+      const protectedCopy = group.files.slice(1).find((rel) => protectionReason(rel, referenceDirs, excludedDirs));
+      if (protectedCopy) {
+        setMessage(`${protectedCopy} 位于保留范围，请把它设为该组保留项后再合并。`);
+        return;
+      }
+    }
+    const totalWasted = groups.reduce((sum, group) => sum + group.wasted, 0);
     if (!window.confirm(
-      `把 ${analysis.dupe_groups.length} 组重复文件合并为硬链接？\n预计释放 ${humanSize(totalWasted)}。\n\n所有文件路径保留、程序照常运行；合并前逐组重新校验内容，失败自动回滚。`
+      `合并 ${groups.length} 组重复文件？\n副本逻辑大小 ${humanSize(totalWasted)}，实际分配空间以执行结果为准。\n\n所有路径保留，但此后通过任一路径修改内容，其他硬链接路径也会看到变化。合并前重新校验全文，失败自动回滚。`
     )) return;
     setMerging(true);
     setMessage("");
     setMergeProgress(null);
+    setLastCleanupResult(null);
     try {
       const r = await invoke<MergeReport>("merge_duplicates", {
         root: path,
-        groups: analysis.dupe_groups.map((g) => ({ ...g, files: orderedDupeFiles(g, dupeKeep) })),
+        groups,
+        referenceDirs,
+        excludedDirs,
       });
       const mergedPaths = new Set(r.results.filter((x) => x.status === "merged" || x.status === "skipped_linked").map((x) => x.path));
-      setAnalysis({
-        ...analysis,
-        dupe_groups: analysis.dupe_groups
-          .map((g) => {
-            const files = orderedDupeFiles(g, dupeKeep).filter((p, i) => i === 0 || !mergedPaths.has(p));
-            return { ...g, files, wasted: g.size * Math.max(0, files.length - 1) };
-          })
-          .filter((g) => g.files.length > 1),
-      });
+      setAnalysis(reconcileAnalysisAfterCleanup(analysis, new Set(), mergedPaths, dupeKeep));
+      setSelected((previous) => new Set([...previous].filter((rel) => !mergedPaths.has(rel))));
+      setLastCleanupResult({ kind: "merge", report: r });
       const resultNotes = r.results
         .filter((x) => x.status !== "merged" && x.detail)
         .slice(0, 5)
         .map((x) => `${x.path}：${x.detail}`)
         .join("\n");
+      const freed = r.verified_freed_bytes == null
+        ? "实际分配空间释放暂无法完整核实"
+        : `已核实释放 ${humanSize(r.verified_freed_bytes)}`;
       setMessage(
-        `空间合并完成：合并 ${r.merged_files} 个副本，实际释放 ${humanSize(r.freed_bytes)}` +
-          `${r.skipped > 0 ? `；${r.skipped} 个已变化或原本已链接，无需处理` : ""}${r.failed > 0 ? `；${r.failed} 个失败` : ""}` +
+        `空间合并完成：${r.merged_files} 个副本，合并逻辑大小 ${humanSize(r.merged_logical_bytes)}；${freed}` +
+          `${r.skipped > 0 ? `；${r.skipped} 个跳过` : ""}${r.failed > 0 ? `；${r.failed} 个失败` : ""}` +
           (resultNotes ? `\n${resultNotes}` : "")
       );
     } catch (e) {
       setMessage(String(e));
     } finally {
       setMerging(false);
-    }
-  }
-
-  // 一键安全释放（M11）：零决策路径——安全缓存进回收站 + 重复文件自动硬链接合并。
-  // 需要人工判断的项（ReviewAdvised、大文件）绝不动。
-  const [quickRunning, setQuickRunning] = useState(false);
-  async function doQuickRelease() {
-    if (!analysis) return;
-    const safeHits = analysis.cache_hits.filter((h) => h.safety === "SafeToDelete");
-    const cacheBytes = safeHits.reduce((s, h) => s + h.size, 0);
-    const dupeBytes = analysis.dupe_groups.reduce((s, g) => s + g.wasted, 0);
-    if (safeHits.length === 0 && analysis.dupe_groups.length === 0) {
-      setMessage("没有可安全释放的项（无安全级缓存、无重复文件）。");
-      return;
-    }
-    if (!window.confirm(
-      `一键安全释放约 ${humanSize(cacheBytes + dupeBytes)}？\n\n` +
-        `· ${safeHits.length} 个安全级缓存目录（${humanSize(cacheBytes)}）→ 回收站\n` +
-        `· ${analysis.dupe_groups.length} 组重复文件（${humanSize(dupeBytes)}）→ 硬链接合并，路径不动\n\n` +
-        `需要你判断的项目不会动。`
-    )) return;
-    setQuickRunning(true);
-    setMessage("");
-    const notes: string[] = [];
-    let next = analysis;
-    try {
-      // 先合并（不删数据），再清缓存；保留副本选择与手动合并一致。
-      if (analysis.dupe_groups.length > 0) {
-        const r = await invoke<MergeReport>("merge_duplicates", {
-          root: path,
-          groups: analysis.dupe_groups.map((g) => ({ ...g, files: orderedDupeFiles(g, dupeKeep) })),
-        });
-        notes.push(`合并 ${r.merged_files} 个副本，释放 ${humanSize(r.freed_bytes)}`);
-        const mergedPaths = new Set(r.results.filter((x) => x.status === "merged" || x.status === "skipped_linked").map((x) => x.path));
-        next = {
-          ...next,
-          dupe_groups: next.dupe_groups
-            .map((g) => {
-              const files = orderedDupeFiles(g, dupeKeep).filter((p, i) => i === 0 || !mergedPaths.has(p));
-              return { ...g, files, wasted: g.size * Math.max(0, files.length - 1) };
-            })
-            .filter((g) => g.files.length > 1),
-        };
-        if (r.failed > 0 || r.skipped > 0) notes.push(`${r.skipped} 个已变化或原本已链接、${r.failed} 个失败`);
-      }
-      // 合并成功、缓存阶段随后失败时，界面也必须立即反映已完成的合并。
-      setAnalysis(next);
-      if (safeHits.length > 0) {
-        const r = await invoke<TrashReport>("move_to_trash", {
-          root: path,
-          relPaths: safeHits.map((h) => h.rel_path),
-        });
-        notes.push(`${r.succeeded} 个缓存目录进回收站`);
-        const gone = r.results.filter((x) => x.ok).map((x) => x.path.replace(/\\/g, "/"));
-        const removedRels = safeHits.map((h) => h.rel_path).filter((rel) => gone.some((p) => p.endsWith(rel)));
-        const isGone = (rel: string) => removedRels.some((dir) => rel === dir || rel.startsWith(`${dir}/`));
-        next = {
-          ...next,
-          cache_hits: next.cache_hits.filter((h) => !isGone(h.rel_path)),
-          big_files: next.big_files.filter((f) => !isGone(f.rel_path)),
-          dupe_groups: next.dupe_groups
-            .map((g) => {
-              const files = g.files.filter((p) => !isGone(p));
-              return { ...g, files, wasted: g.size * Math.max(0, files.length - 1) };
-            })
-            .filter((g) => g.files.length > 1),
-        };
-        if (r.failed > 0) notes.push(`${r.failed} 个缓存删除失败`);
-      }
-      setAnalysis(next);
-      setSelected(new Set());
-      setMessage(`一键安全释放完成：${notes.join("；")}`);
-    } catch (e) {
-      setMessage(String(e));
-    } finally {
-      setQuickRunning(false);
     }
   }
 
@@ -373,11 +314,11 @@ export default function App() {
   useEffect(() => {
     if (autoMinutes <= 0 || !path || !db) return;
     const t = setInterval(() => {
-      if (!scanning && !analyzing && !trashing && !merging && !quickRunning) void doSaveSnapshot();
+      if (!scanning && !analyzing && !trashing && !merging) void doSaveSnapshot();
     }, autoMinutes * 60_000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoMinutes, path, db, scanning, analyzing, trashing, merging, quickRunning]);
+  }, [autoMinutes, path, db, scanning, analyzing, trashing, merging]);
 
   // 进入快照/差异页面时自动刷新快照列表
   useEffect(() => {
@@ -407,13 +348,20 @@ export default function App() {
     return s;
   }, [analysis]);
 
-  type TrashReport = {
-    results: { path: string; ok: boolean; error: string | null }[];
-    succeeded: number;
-    failed: number;
-  };
+  function addProtection(kind: "reference" | "excluded") {
+    const normalized = normalizeCleanupPath(protectionInput);
+    if (!normalized || normalized.split("/").includes("..") || /^[a-zA-Z]:/.test(normalized)) {
+      setMessage("请输入扫描根目录内的相对路径，例如 originals/项目原件。");
+      return;
+    }
+    const update = kind === "reference" ? setReferenceDirs : setExcludedDirs;
+    update((previous) => previous.includes(normalized) ? previous : [...previous, normalized]);
+    setProtectionInput("");
+    setMessage("");
+  }
 
   function toggleOne(rel: string) {
+    if (protectionReason(rel, referenceDirs, excludedDirs)) return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(rel)) next.delete(rel);
@@ -423,10 +371,11 @@ export default function App() {
   }
 
   function toggleDupeGroup(g: DupeGroup) {
-    const rest = orderedDupeFiles(g, dupeKeep).slice(1);
+    const rest = orderedDupeFiles(g, dupeKeep).slice(1)
+      .filter((rel) => !protectionReason(rel, referenceDirs, excludedDirs));
     setSelected((prev) => {
       const next = new Set(prev);
-      const allIn = rest.every((p) => next.has(p));
+      const allIn = rest.length > 0 && rest.every((p) => next.has(p));
       for (const p of rest) {
         if (allIn) next.delete(p);
         else next.add(p);
@@ -444,51 +393,98 @@ export default function App() {
         next.delete(keep);
         return next;
       }
-      return updateDupeKeepSelection(prev, group, dupeKeep, keep);
+      return withoutProtectedPaths(
+        updateDupeKeepSelection(prev, group, dupeKeep, keep),
+        referenceDirs,
+        excludedDirs,
+      );
     });
   }
 
+  const allowedSelected = useMemo(
+    () => withoutProtectedPaths(selected, referenceDirs, excludedDirs),
+    [selected, referenceDirs, excludedDirs]
+  );
+
   function selectedBytes(): number {
-    return analysis ? selectedCleanupBytes(analysis, selected, dupeKeep) : 0;
+    return analysis ? selectedCleanupBytes(analysis, allowedSelected, dupeKeep) : 0;
   }
 
+  useEffect(() => {
+    if (!analysis) return;
+    setDupeKeep((previous) => {
+      const next = { ...previous };
+      for (const group of analysis.dupe_groups) {
+        const reference = group.files.find((rel) => protectionReason(rel, referenceDirs, []));
+        if (reference) next[group.hash] = reference;
+      }
+      return next;
+    });
+    setSelected((previous) => withoutProtectedPaths(previous, referenceDirs, excludedDirs));
+  }, [analysis, referenceDirs, excludedDirs]);
+
   async function doTrash() {
-    if (!analysis || selected.size === 0) return;
-    const targets = effectiveSelectedPaths(selected, analysis.cache_hits);
+    if (!analysis || allowedSelected.size === 0 || scanning || analyzing || trashing || merging) return;
+    const targets = effectiveSelectedPaths(allowedSelected, analysis.cache_hits);
     const n = targets.size;
     if (n === 0) return;
-    if (!window.confirm(`确认把 ${n} 项（约 ${humanSize(selectedBytes())}）移入系统回收站？\n可在回收站中恢复。`)) return;
+    if (!window.confirm(
+      `确认把 ${n} 项（逻辑大小 ${humanSize(selectedBytes())}）移入系统回收站？\n\n执行前会复核路径和内容变化。移入后可在回收站恢复，但在清空前不会计为已实际释放。`
+    )) return;
     setTrashing(true);
     setMessage("");
+    setLastCleanupResult(null);
     try {
-      const r = await invoke<TrashReport>("move_to_trash", { root: path, relPaths: [...targets] });
-      const gone = r.results.filter((x) => x.ok).map((x) => x.path.replace(/\\/g, "/"));
-      const removedRels = [...targets].filter((rel) => gone.some((p) => p.endsWith(rel.replace(/\\/g, "/"))));
-      const isGone = (rel: string) => removedRels.some((dir) => rel === dir || rel.startsWith(`${dir}/`));
-      setAnalysis({
-        ...analysis,
-        cache_hits: analysis.cache_hits.filter((h) => !isGone(h.rel_path)),
-        big_files: analysis.big_files.filter((f) => !isGone(f.rel_path)),
-        dupe_groups: analysis.dupe_groups
-          .map((g) => {
-            const files = g.files.filter((p) => !isGone(p));
-            return { ...g, files, wasted: g.size * Math.max(0, files.length - 1) };
-          })
-          .filter((g) => g.files.length > 1),
+      const r = await invoke<CleanupExecutionReport>("execute_cleanup_plan", {
+        root: path,
+        analysis,
+        relPaths: [...targets],
+        referenceDirs,
+        excludedDirs,
       });
+      const removedRels = r.results.filter((item) => item.status === "moved_to_trash").map((item) => item.path);
+      setAnalysis(reconcileAnalysisAfterCleanup(analysis, new Set(removedRels), new Set(), dupeKeep));
       setSelected(new Set());
-      const failDetail = r.results
-        .filter((x) => !x.ok)
+      setLastCleanupResult({ kind: "trash", report: r });
+      const notes = r.results
+        .filter((item) => item.status !== "moved_to_trash")
         .slice(0, 5)
-        .map((x) => `${x.path}：${x.error}`)
+        .map((item) => `${item.path}：${item.detail ?? item.status}`)
         .join("\n");
       setMessage(
-        `已移入回收站 ${r.succeeded} 项${r.failed > 0 ? `，失败 ${r.failed} 项：\n${failDetail}` : "，可在系统回收站恢复"}`
+        `已移入回收站 ${r.succeeded} 项，待清空 ${humanSize(r.pending_recycle_bin_bytes)}；尚未计为实际释放` +
+          `${r.skipped > 0 ? `；${r.skipped} 项因变化或保护边界跳过` : ""}${r.failed > 0 ? `；${r.failed} 项失败` : ""}` +
+          (notes ? `\n${notes}` : "")
       );
     } catch (e) {
       setMessage(String(e));
     } finally {
       setTrashing(false);
+    }
+  }
+
+  async function verifyCleanupSnapshot() {
+    const baseline = analysis?.baseline_snapshot_id;
+    if (!path.trim() || !db.trim() || !baseline || scanning || analyzing || trashing || merging) {
+      if (!baseline) setMessage("没有可比较的基准快照，请重新分析。");
+      return;
+    }
+    setScanning(true);
+    setMessage("");
+    setProgress(null);
+    try {
+      const saved = await invoke<{ id: number }>("save_snapshot", { path, db });
+      await refreshSnapshots();
+      const difference = await invoke<DiffReport>("diff_snapshots", { db, old: baseline, new: saved.id });
+      setOldId(baseline);
+      setNewId(saved.id);
+      setReport(difference);
+      setSection("diff");
+      setMessage(`已比较基准快照 #${baseline} 与结果快照 #${saved.id}。逻辑大小变化不等于分配空间或卷可用空间变化。`);
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setScanning(false);
     }
   }
 
@@ -511,24 +507,28 @@ export default function App() {
     setMergeProgress(null);
     setSelected(new Set());
     setDupeKeep({});
+    setLastCleanupResult(null);
   }
 
   function changePath(next: string) {
-    if (next === path || scanning || analyzing || trashing || merging || quickRunning) return;
+    if (next === path || scanning || analyzing || trashing || merging) return;
     setPath(next);
     setTree(null);
     setOutcome(null);
+    setReferenceDirs([]);
+    setExcludedDirs([]);
+    setProtectionInput("");
     resetCleanup();
   }
 
   async function pickDir() {
-    if (scanning || analyzing || trashing || merging || quickRunning) return;
+    if (scanning || analyzing || trashing || merging) return;
     const p = await open({ directory: true });
     if (typeof p === "string") changePath(p);
   }
 
   async function doScan() {
-    if (!path.trim() || scanning || analyzing || trashing || merging || quickRunning) return;
+    if (!path.trim() || scanning || analyzing || trashing || merging) return;
     resetCleanup();
     setScanning(true);
     setMessage("");
@@ -547,7 +547,7 @@ export default function App() {
   }
 
   async function doSaveSnapshot() {
-    if (!path.trim() || !db.trim() || scanning || analyzing || trashing || merging || quickRunning) return;
+    if (!path.trim() || !db.trim() || scanning || analyzing || trashing || merging) return;
     setScanning(true);
     setMessage("");
     setProgress(null);
@@ -588,22 +588,25 @@ export default function App() {
   }
 
   async function doAnalyze() {
-    if (!path.trim() || scanning || analyzing || trashing || merging || quickRunning) return;
+    if (!path.trim() || scanning || analyzing || trashing || merging) return;
     setAnalyzing(true);
     setMessage("");
     setAnalysis(null);
     setAnalyzeProgress(null);
     setSelected(new Set());
     setDupeKeep({});
+    setLastCleanupResult(null);
     const root = path;
     try {
       const r = await invoke<AnalysisReport>("analyze_cleanup", {
         path: root,
+        db,
         top: 50,
         dupeMinMib: dupeMinMib,
         skipDupes,
       });
       setAnalysis(r);
+      await refreshSnapshots();
     } catch (e) {
       setMessage(String(e));
     } finally {
@@ -655,11 +658,11 @@ export default function App() {
   }, [report]);
 
   const cleanupStats = useMemo(() => {
-    const safeHits = analysis?.cache_hits.filter((h) => h.safety === "SafeToDelete") ?? [];
+    const recommendedHits = analysis?.cache_hits.filter((h) => h.safety === "Recommended") ?? [];
     const reviewHits = analysis?.cache_hits.filter((h) => h.safety === "ReviewAdvised") ?? [];
     return {
-      safeCount: safeHits.length,
-      safeBytes: safeHits.reduce((sum, h) => sum + h.size, 0),
+      recommendedCount: recommendedHits.length,
+      recommendedBytes: recommendedHits.reduce((sum, h) => sum + h.size, 0),
       reviewCount: reviewHits.length,
       reviewBytes: reviewHits.reduce((sum, h) => sum + h.size, 0),
       dupeBytes: analysis?.dupe_groups.reduce((sum, g) => sum + g.wasted, 0) ?? 0,
@@ -667,8 +670,8 @@ export default function App() {
   }, [analysis]);
 
   const selectedTargets = useMemo(
-    () => effectiveSelectedPaths(selected, analysis?.cache_hits ?? []),
-    [analysis, selected]
+    () => effectiveSelectedPaths(allowedSelected, analysis?.cache_hits ?? []),
+    [analysis, allowedSelected]
   );
 
   return (
@@ -736,14 +739,14 @@ export default function App() {
                     placeholder="例如 D:\Games 或 C:\Users"
                     autoComplete="off"
                     spellCheck={false}
-                    disabled={scanning || analyzing || trashing || merging || quickRunning}
+                    disabled={scanning || analyzing || trashing || merging}
                   />
-                  <button onClick={pickDir} disabled={scanning || analyzing || trashing || merging || quickRunning}>选择目录</button>
+                  <button onClick={pickDir} disabled={scanning || analyzing || trashing || merging}>选择目录</button>
                 </div>
                 <div className="scan-form-footer">
                   <span className="field-hint">只读取目录与文件信息，不会修改文件内容。</span>
                   {!scanning ? (
-                    <button className="primary" onClick={doScan} disabled={!path.trim() || analyzing || trashing || merging || quickRunning}>
+                    <button className="primary" onClick={doScan} disabled={!path.trim() || analyzing || trashing || merging}>
                       开始扫描
                     </button>
                   ) : (
@@ -856,7 +859,7 @@ export default function App() {
                     </select>
                   </label>
                   <button onClick={refreshSnapshots}>刷新</button>
-                  <button className="primary" onClick={doSaveSnapshot} disabled={!path.trim() || !db.trim() || scanning || analyzing || trashing || merging || quickRunning}>
+                  <button className="primary" onClick={doSaveSnapshot} disabled={!path.trim() || !db.trim() || scanning || analyzing || trashing || merging}>
                     {scanning ? "正在保存…" : "扫描并保存快照"}
                   </button>
                 </div>
@@ -1058,7 +1061,7 @@ export default function App() {
                       <button onClick={() => exportDiff("json")}>导出 JSON</button>
                       <button onClick={() => exportDiff("csv")}>导出 CSV</button>
                     </div>
-                    <div className="action-note">净变化 = 新增与增长增加的空间 − 删除与缩减释放的空间。</div>
+                    <div className="action-note">净变化 = 新增与增长增加的逻辑大小 − 删除与缩减减少的逻辑大小。</div>
                   </div>
 
                   {report.warnings.length > 0 && (
@@ -1069,11 +1072,11 @@ export default function App() {
 
                   <dl className="cleanup-breakdown diff-breakdown" aria-label="文件变化分类统计">
                     <div>
-                      <dt>新增文件 <span>增加占用</span></dt>
+                      <dt>新增文件 <span>逻辑大小增加</span></dt>
                       <dd>{report.summary.added_files.toLocaleString("zh-CN")} <span>+{humanSize(diffBytes.Added)}</span></dd>
                     </div>
                     <div>
-                      <dt>删除文件 <span>释放占用</span></dt>
+                      <dt>删除文件 <span>逻辑大小减少</span></dt>
                       <dd>{report.summary.removed_files.toLocaleString("zh-CN")} <span>−{humanSize(diffBytes.Removed)}</span></dd>
                     </div>
                     <div>
@@ -1171,7 +1174,7 @@ export default function App() {
         {section === "clean" && (
           <div className="page" key="clean">
             <h1 className="page-title">清理建议</h1>
-            <p className="page-desc">先区分可安全释放与需要确认的项目，再决定如何处理；删除项进入系统回收站。</p>
+            <p className="page-desc">目录名称只提供复核线索，不代表可以安全删除。先设定保留边界，再手动确认；执行前还会复核扫描基线。</p>
             <section className="panel cleanup-panel" aria-label="可回收空间分析">
               <div className="cleanup-settings">
                 <div className="cleanup-settings-copy">
@@ -1184,6 +1187,7 @@ export default function App() {
                       type="checkbox"
                       checked={!skipDupes}
                       onChange={(e) => setSkipDupes(!e.target.checked)}
+                      disabled={analyzing || trashing || merging}
                     />
                     检测重复文件
                   </label>
@@ -1195,13 +1199,13 @@ export default function App() {
                       type="number"
                       min={1}
                       value={dupeMinMib}
-                      disabled={skipDupes}
+                      disabled={skipDupes || analyzing || trashing || merging}
                       onChange={(e) => setDupeMinMib(Number(e.target.value) || 1)}
                     />
                     <span>MiB</span>
                   </label>
                   {!analyzing ? (
-                    <button className="primary" onClick={doAnalyze} disabled={!path.trim() || scanning || trashing || merging || quickRunning}>
+                    <button className="primary" onClick={doAnalyze} disabled={!path.trim() || scanning || trashing || merging}>
                       {analysis ? "重新分析" : "开始分析"}
                     </button>
                   ) : (
@@ -1211,6 +1215,49 @@ export default function App() {
                   )}
                 </div>
               </div>
+
+              <section className="protection-editor" aria-labelledby="protection-heading">
+                <div className="protection-copy">
+                  <h2 id="protection-heading">保留边界</h2>
+                  <p>参考目录是重复文件的保留锚点；排除目录完全不参与清理。两者的内部与祖先目录都不可选。</p>
+                </div>
+                <div className="protection-add">
+                  <input
+                    aria-label="保护目录相对路径"
+                    value={protectionInput}
+                    onChange={(event) => setProtectionInput(event.target.value)}
+                    placeholder="例如 originals/项目原件"
+                    disabled={scanning || analyzing || trashing || merging}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") addProtection("reference");
+                    }}
+                  />
+                  <button onClick={() => addProtection("reference")} disabled={!protectionInput.trim() || scanning || analyzing || trashing || merging}>添加参考目录</button>
+                  <button onClick={() => addProtection("excluded")} disabled={!protectionInput.trim() || scanning || analyzing || trashing || merging}>添加排除目录</button>
+                </div>
+                <div className="protection-lists">
+                  {([
+                    ["参考目录", referenceDirs, setReferenceDirs],
+                    ["排除目录", excludedDirs, setExcludedDirs],
+                  ] as const).map(([label, dirs, update]) => (
+                    <div className="protection-list" key={label}>
+                      <strong>{label}</strong>
+                      {dirs.length === 0 ? <span>未设置</span> : dirs.map((dir) => (
+                        <span className="protection-chip" key={dir}>
+                          <span className="mono">{dir}</span>
+                          <button
+                            type="button"
+                            aria-label={`移除${label} ${dir}`}
+                            title={`移除${label}`}
+                            disabled={scanning || analyzing || trashing || merging}
+                            onClick={() => update((previous) => previous.filter((item) => item !== dir))}
+                          >×</button>
+                        </span>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </section>
 
               {analyzing && (
                 <div className="progress cleanup-progress" role="status">
@@ -1237,22 +1284,15 @@ export default function App() {
                   <div className="action-panel">
                     <div className="action-main">
                       <div className="action-figure">
-                        可安全释放 <b>{humanSize(cleanupStats.safeBytes + cleanupStats.dupeBytes)}</b>
+                        候选逻辑大小 <b>{humanSize(analysis.candidate_logical_bytes)}</b>
                       </div>
                       <div className="action-sub">
-                        安全缓存与重复冗余的估算上限
+                        分类估算，缓存与重复文件可能重叠，不等于实际可释放空间
                         {!skipDupes &&
                           ` · 已校验 ${humanSize(analysis.hashed_bytes)}${analysis.hash_errors > 0 ? ` · ${analysis.hash_errors} 个文件校验失败` : ""}`}
                       </div>
                     </div>
                     <div className="action-btns">
-                      <button
-                        className="primary"
-                        onClick={doQuickRelease}
-                        disabled={quickRunning || merging || trashing || cleanupStats.safeBytes + cleanupStats.dupeBytes === 0}
-                      >
-                        {quickRunning ? "正在安全释放…" : "一键安全释放"}
-                      </button>
                       {tree && (
                         <button
                           onClick={() => {
@@ -1265,45 +1305,47 @@ export default function App() {
                       )}
                     </div>
                     <div className="action-note">
-                      安全缓存移入回收站；重复文件合并为硬链接并保留所有路径。待确认项目和大文件不会自动处理。
+                      分析基准：{analysis.scan_id} · {analysis.baseline_snapshot_id ? `快照 #${analysis.baseline_snapshot_id}` : "未保存快照，请在快照设置中填写数据库后重新分析"}。所有清理动作均需手动确认。
                     </div>
                   </div>
 
                   <dl className="cleanup-breakdown" aria-label="清理结果分类统计">
                     <div>
-                      <dt>安全缓存 <span>{cleanupStats.safeCount} 项</span></dt>
-                      <dd>{humanSize(cleanupStats.safeBytes)}</dd>
+                      <dt>建议优先复核 <span>{cleanupStats.recommendedCount} 项</span></dt>
+                      <dd>{humanSize(cleanupStats.recommendedBytes)}</dd>
                     </div>
                     <div>
-                      <dt>待确认缓存 <span>{cleanupStats.reviewCount} 项</span></dt>
+                      <dt>需人工判断 <span>{cleanupStats.reviewCount} 项</span></dt>
                       <dd>{humanSize(cleanupStats.reviewBytes)}</dd>
                     </div>
                     <div>
-                      <dt>重复冗余 <span>{analysis.dupe_groups.length} 组</span></dt>
+                      <dt>重复副本逻辑大小 <span>{analysis.dupe_groups.length} 组</span></dt>
                       <dd>{humanSize(cleanupStats.dupeBytes)}</dd>
                     </div>
                   </dl>
 
                   <div className="selection-bar">
                     <div className="selection-copy">
-                      <strong>手动清理</strong>
-                      <span>勾选大文件、缓存或重复副本后移入回收站；每组重复文件保留所选一份。</span>
+                      <strong>复核后清理</strong>
+                      <span>逻辑大小仅供选择参考；移入回收站不等于已经释放，每组重复文件至少保留一份。</span>
                     </div>
                     <button
                       className="danger"
                       onClick={doTrash}
-                      disabled={selectedTargets.size === 0 || trashing || quickRunning || merging}
+                      disabled={selectedTargets.size === 0 || scanning || analyzing || trashing || merging}
                     >
-                      {trashing ? "正在移入回收站…" : `移入回收站（${selectedTargets.size} 项 · ${humanSize(selectedBytes())}）`}
+                      {trashing ? "正在复核并移入回收站…" : `移入回收站（${selectedTargets.size} 项 · ${humanSize(selectedBytes())}）`}
                     </button>
                   </div>
 
                   <CleanupList
                     analysis={analysis}
-                    selected={selected}
+                    selected={allowedSelected}
                     dupeKeep={dupeKeep}
+                    referenceDirs={referenceDirs}
+                    excludedDirs={excludedDirs}
+                    busy={scanning || analyzing}
                     merging={merging}
-                    quickRunning={quickRunning}
                     trashing={trashing}
                     mergeProgress={mergeProgress}
                     onToggleOne={toggleOne}
@@ -1313,6 +1355,51 @@ export default function App() {
                     onCopyPath={copyPath}
                     onMerge={doMerge}
                   />
+
+                  {lastCleanupResult && (
+                    <section className="cleanup-result-review" aria-labelledby="cleanup-result-heading">
+                      <div className="section-heading">
+                        <h2 id="cleanup-result-heading">执行结果</h2>
+                        <span>{lastCleanupResult.kind === "trash" ? "回收站" : "重复文件合并"}</span>
+                        <button
+                          onClick={verifyCleanupSnapshot}
+                          disabled={!analysis.baseline_snapshot_id || !db.trim() || scanning || analyzing || trashing || merging}
+                        >
+                          保存结果快照并比较
+                        </button>
+                      </div>
+                      {lastCleanupResult.kind === "trash" ? (
+                        <>
+                          <dl className="cleanup-breakdown" aria-label="回收站执行统计">
+                            <div><dt>已移入 <span>{lastCleanupResult.report.succeeded} 项</span></dt><dd>{humanSize(lastCleanupResult.report.pending_recycle_bin_bytes)}</dd></div>
+                            <div><dt>实际释放 <span>回收站尚未清空</span></dt><dd>未核实</dd></div>
+                            <div><dt>未执行 <span>跳过 {lastCleanupResult.report.skipped} · 失败 {lastCleanupResult.report.failed}</span></dt><dd>{lastCleanupResult.report.skipped + lastCleanupResult.report.failed} 项</dd></div>
+                          </dl>
+                          <p className="section-desc">上述大小是仍待清空回收站的逻辑大小，不会记作已释放空间。结果快照用于复核文件变化，不直接测量卷可用空间。</p>
+                        </>
+                      ) : (
+                        <>
+                          <dl className="cleanup-breakdown" aria-label="重复文件合并统计">
+                            <div><dt>已合并 <span>{lastCleanupResult.report.merged_files} 个副本</span></dt><dd>{humanSize(lastCleanupResult.report.merged_logical_bytes)}</dd></div>
+                            <div><dt>已核实分配空间释放 <span>按文件分配大小计算</span></dt><dd>{lastCleanupResult.report.verified_freed_bytes == null ? "无法完整核实" : humanSize(lastCleanupResult.report.verified_freed_bytes)}</dd></div>
+                            <div><dt>未执行 <span>跳过 {lastCleanupResult.report.skipped} · 失败 {lastCleanupResult.report.failed}</span></dt><dd>{lastCleanupResult.report.skipped + lastCleanupResult.report.failed} 项</dd></div>
+                          </dl>
+                          <p className="section-desc">合并逻辑大小不等于已释放空间。只有成功读取各项分配大小时，才显示已核实释放量。</p>
+                        </>
+                      )}
+                      <details className="execution-details">
+                        <summary>查看逐项执行记录</summary>
+                        <ul>
+                          {lastCleanupResult.report.results.slice(0, 50).map((item) => (
+                            <li key={item.path}>
+                              <span className="mono">{item.path}</span>
+                              <span>{item.status}{item.detail ? ` · ${item.detail}` : ""}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    </section>
+                  )}
                 </div>
               )}
             </section>

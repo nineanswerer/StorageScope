@@ -71,9 +71,16 @@ enum Cmd {
 #[derive(Subcommand)]
 enum SnapCmd {
     /// 扫描目录并保存为快照（被取消的结果拒绝入库）
-    Save { path: PathBuf, #[arg(long)] db: PathBuf },
+    Save {
+        path: PathBuf,
+        #[arg(long)]
+        db: PathBuf,
+    },
     /// 列出全部快照
-    List { #[arg(long)] db: PathBuf },
+    List {
+        #[arg(long)]
+        db: PathBuf,
+    },
 }
 
 fn human_size(bytes: u64) -> String {
@@ -93,7 +100,11 @@ fn human_size(bytes: u64) -> String {
 
 fn print_tree(stat: &storagescope_core::model::DirStat, depth: usize, max_depth: usize) {
     let indent = "  ".repeat(depth);
-    let warn = if stat.has_errors { "  ⚠ 统计可能不完整" } else { "" };
+    let warn = if stat.has_errors {
+        "  ⚠ 统计可能不完整"
+    } else {
+        ""
+    };
     println!(
         "{}{:>12}  {:>6} 文件  {}{}",
         indent,
@@ -245,9 +256,15 @@ fn main() {
                     Err(e) => println!("ERRDIR {}：{}", d.display(), e),
                 }
             }
-            println!("完成：{} 目录，{} 文件，耗时 {:?}", dirs, files, started.elapsed());
+            println!(
+                "完成：{} 目录，{} 文件，耗时 {:?}",
+                dirs,
+                files,
+                started.elapsed()
+            );
         }
-        Cmd::Snap { cmd } => match cmd {            SnapCmd::Save { path, db } => {
+        Cmd::Snap { cmd } => match cmd {
+            SnapCmd::Save { path, db } => {
                 let scanner = Scanner::new(ScanConfig::default());
                 let cancel = scanner.cancel_handle();
                 ctrlc::set_handler(move || {
@@ -381,10 +398,7 @@ fn main() {
                 None
             } else {
                 Some(&mut |done, total| {
-                    let _ = writeln!(
-                        std::io::stderr(),
-                        "… 哈希校验中：{done}/{total} 个候选文件"
-                    );
+                    let _ = writeln!(std::io::stderr(), "… 哈希校验中：{done}/{total} 个候选文件");
                 })
             };
             let report = if no_dupes {
@@ -409,7 +423,7 @@ fn main() {
                 }
                 for h in &report.cache_hits {
                     let tag = match h.safety {
-                        rules::Safety::SafeToDelete => "可安全清理",
+                        rules::Safety::Recommended => "建议处理（仍需确认）",
                         rules::Safety::ReviewAdvised => "建议确认",
                     };
                     println!(
@@ -447,14 +461,17 @@ fn main() {
                         }
                     }
                     if report.dupe_groups.len() > 20 {
-                        println!("  … 另有 {} 组，--json 查看全部", report.dupe_groups.len() - 20);
+                        println!(
+                            "  … 另有 {} 组，--json 查看全部",
+                            report.dupe_groups.len() - 20
+                        );
                     }
                 }
 
                 println!();
                 println!(
-                    "估算可回收：{}（安全级缓存 + 重复冗余，为估算上限）",
-                    human_size(report.reclaimable_bytes)
+                    "候选逻辑大小：{}（分类可能重叠，不代表实际释放）",
+                    human_size(report.candidate_logical_bytes)
                 );
                 if !no_dupes {
                     println!(

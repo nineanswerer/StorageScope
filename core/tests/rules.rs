@@ -89,7 +89,7 @@ fn rules_detect_cache_bigfiles_and_dupes() {
         .find(|h| h.rel_path == "工具/cache")
         .unwrap();
     assert_eq!(cache_hit.size, 1000, "外层命中应含整棵子树的大小");
-    assert!(matches!(cache_hit.safety, Safety::SafeToDelete));
+    assert!(matches!(cache_hit.safety, Safety::ReviewAdvised));
 
     // ── 大文件猎人 ──
     assert_eq!(report.big_files[0].rel_path, "光影包.zip");
@@ -121,9 +121,18 @@ fn rules_detect_cache_bigfiles_and_dupes() {
         .contains(&"游戏A/备份/深层/jei-backup.jar".to_string()));
     assert_eq!(report.hash_errors, 0);
 
-    // 可回收估算 = 安全级缓存 + 重复冗余
+    // 候选逻辑大小包含全部候选与重复冗余，分类可能重叠，不能称为实际释放。
     let expected_cache: u64 = 20_000 + 8 + 1000; // cache + logs("log text") + 嵌套
-    assert_eq!(report.reclaimable_bytes, expected_cache + 300_000);
+    assert_eq!(report.candidate_logical_bytes, expected_cache + 300_000);
+    assert!(report
+        .cache_hits
+        .iter()
+        .all(|hit| hit.safety == Safety::ReviewAdvised));
+    assert!(!report.scan_id.is_empty());
+    assert!(report
+        .cleanup_targets
+        .iter()
+        .any(|target| target.rel_path == "工具/cache" && target.manifest_hash.is_some()));
 }
 
 #[test]

@@ -9,12 +9,12 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
-/// 建议的安全等级。
+/// 建议等级只表达规则证据，不对用户数据作绝对安全承诺。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Safety {
-    /// 可安全清理：程序可再生的缓存、日志、崩溃报告、临时文件。
-    SafeToDelete,
-    /// 建议人工确认后再清理（如 node_modules、backups）。
+    /// 具备应用身份和路径边界等充分证据；仍需用户确认。
+    Recommended,
+    /// 只有目录名、体积等部分证据，必须人工判断。
     ReviewAdvised,
 }
 
@@ -58,19 +58,22 @@ pub struct DupeGroup {
     pub hash: u64,
     /// 相对路径列表（第一份保留，其余为冗余）。
     pub files: Vec<String>,
-    /// 可回收空间 = size × (份数 - 1)。
+    /// 副本逻辑大小 = size × (份数 - 1)，不代表实际释放。
     pub wasted: u64,
 }
 
-/// 完整分析报告。
+/// 完整分析报告。所有字节数均为逻辑口径，不代表回收站清空后的实际释放。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisReport {
+    pub scan_id: String,
+    pub baseline_snapshot_id: Option<i64>,
     pub cache_hits: Vec<RuleHit>,
     pub big_files: Vec<FileEntry>,
     pub dupe_groups: Vec<DupeGroup>,
-    /// 估算可回收字节：安全级缓存命中 + 重复文件冗余。
-    /// 两类命中可能重叠（重复文件落在缓存目录里），故仅为估算上限。
-    pub reclaimable_bytes: u64,
+    /// 分类估算上限，缓存与重复文件可能重叠，禁止称为已释放。
+    pub candidate_logical_bytes: u64,
+    /// 清理执行所需的目录清单与文件状态基线。
+    pub cleanup_targets: Vec<TargetExpectation>,
     /// 哈希阶段实际读取的字节数（性能观测用）。
     pub hashed_bytes: u64,
     /// 哈希阶段读取失败的文件数。
@@ -78,7 +81,7 @@ pub struct AnalysisReport {
 }
 
 // ---------------------------------------------------------------------------
-// 内置缓存/可清理规则：按目录名匹配（大小写不敏感、精确匹配）。
+// 内置候选规则：目录名只提供线索，不提供整棵目录可删除的充分证明。
 // 命中目录的整棵子树计入，不再向下重复匹配。
 // ---------------------------------------------------------------------------
 
@@ -93,51 +96,51 @@ struct CacheRule {
 const CACHE_RULES: &[CacheRule] = &[
     CacheRule {
         id: "mc.lightspeed-cache",
-        name: "MC 模组加载缓存",
+        name: "MC 模组加载缓存候选",
         dir_names: &["lightspeed-cache", "dynamic-data-pack-cache"],
-        reason: "Lightspeed/动态数据包缓存，删除后下次启动自动重建",
-        safety: Safety::SafeToDelete,
+        reason: "名称类似模组加载缓存；尚未核验应用身份与重建范围，请确认后再处理",
+        safety: Safety::ReviewAdvised,
     },
     CacheRule {
         id: "generic.cache",
-        name: "通用缓存目录",
+        name: "缓存命名目录",
         dir_names: &["cache", "caches", ".cache"],
-        reason: "程序缓存，删除后按需重建",
-        safety: Safety::SafeToDelete,
+        reason: "仅目录名像缓存，也可能是用户资料；需要确认归属、内容和重建影响",
+        safety: Safety::ReviewAdvised,
     },
     CacheRule {
         id: "generic.logs",
-        name: "日志目录",
+        name: "日志命名目录",
         dir_names: &["logs"],
-        reason: "运行日志，排障后无保留价值",
-        safety: Safety::SafeToDelete,
+        reason: "日志可能仍在写入，或用于排障与审计；请确认保留需求",
+        safety: Safety::ReviewAdvised,
     },
     CacheRule {
         id: "mc.crash-reports",
-        name: "崩溃报告",
+        name: "崩溃报告候选",
         dir_names: &["crash-reports"],
-        reason: "历史崩溃报告，看完即可清理",
-        safety: Safety::SafeToDelete,
+        reason: "目录名像崩溃报告；确认不再需要排障后再处理",
+        safety: Safety::ReviewAdvised,
     },
     CacheRule {
         id: "generic.temp",
-        name: "临时文件目录",
+        name: "临时命名目录",
         dir_names: &["tmp", "temp", ".tmp"],
-        reason: "临时文件，程序不保证其长期有效",
-        safety: Safety::SafeToDelete,
+        reason: "仅目录名像临时目录，不能据此推断其中文件均可删除",
+        safety: Safety::ReviewAdvised,
     },
     CacheRule {
         id: "dev.node-modules",
         name: "npm 依赖目录",
         dir_names: &["node_modules"],
-        reason: "可用 npm/pnpm install 重新安装，但请确认项目不再需要离线依赖",
+        reason: "通常可重新安装，但需确认项目、包管理器与离线依赖需求",
         safety: Safety::ReviewAdvised,
     },
     CacheRule {
         id: "generic.backups",
-        name: "自动备份目录",
+        name: "备份命名目录",
         dir_names: &["backups", "backup"],
-        reason: "启动器/程序自动备份，确认无用后再删",
+        reason: "备份可能是唯一副本；必须人工确认，不按自动备份处理",
         safety: Safety::ReviewAdvised,
     },
 ];
@@ -385,6 +388,33 @@ pub fn find_duplicates<'a>(
     (final_groups, hashed_bytes, hash_errors)
 }
 
+fn finish_report(
+    root: &Path,
+    outcome: &ScanOutcome,
+    tree: &DirStat,
+    cache_hits: Vec<RuleHit>,
+    big_files: Vec<FileEntry>,
+    dupe_groups: Vec<DupeGroup>,
+    hashed_bytes: u64,
+    hash_errors: u64,
+) -> AnalysisReport {
+    let candidate_logical_bytes = cache_hits.iter().map(|hit| hit.size).sum::<u64>()
+        + dupe_groups.iter().map(|group| group.wasted).sum::<u64>();
+    let cleanup_targets =
+        crate::plan::build_expectations(root, outcome, tree, &cache_hits, &big_files, &dupe_groups);
+    AnalysisReport {
+        scan_id: crate::plan::scan_id(outcome),
+        baseline_snapshot_id: None,
+        cache_hits,
+        big_files,
+        dupe_groups,
+        candidate_logical_bytes,
+        cleanup_targets,
+        hashed_bytes,
+        hash_errors,
+    }
+}
+
 /// 汇总入口：三类分析一次跑完。
 pub fn analyze<'a>(
     root: &Path,
@@ -398,39 +428,32 @@ pub fn analyze<'a>(
     let big_files = find_big_files(outcome, top_n_big);
     let (dupe_groups, hashed_bytes, hash_errors) =
         find_duplicates(root, outcome, dupe_min_size, on_dupe_progress);
-    let reclaimable = cache_hits
-        .iter()
-        .filter(|h| h.safety == Safety::SafeToDelete)
-        .map(|h| h.size)
-        .sum::<u64>()
-        + dupe_groups.iter().map(|g| g.wasted).sum::<u64>();
-    AnalysisReport {
+    finish_report(
+        root,
+        outcome,
+        tree,
         cache_hits,
         big_files,
         dupe_groups,
-        reclaimable_bytes: reclaimable,
         hashed_bytes,
         hash_errors,
-    }
+    )
 }
 
 /// 轻量分析：跳过重复文件检测（不读文件内容，秒出）。
 pub fn analyze_light(outcome: &ScanOutcome, tree: &DirStat, top_n_big: usize) -> AnalysisReport {
     let cache_hits = find_cache_hits(tree);
     let big_files = find_big_files(outcome, top_n_big);
-    let reclaimable = cache_hits
-        .iter()
-        .filter(|h| h.safety == Safety::SafeToDelete)
-        .map(|h| h.size)
-        .sum();
-    AnalysisReport {
+    finish_report(
+        Path::new(&outcome.root),
+        outcome,
+        tree,
         cache_hits,
         big_files,
-        dupe_groups: Vec::new(),
-        reclaimable_bytes: reclaimable,
-        hashed_bytes: 0,
-        hash_errors: 0,
-    }
+        Vec::new(),
+        0,
+        0,
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { buildCleanupItems, orderedDupeFiles } from "./cleanupModel";
+import { buildCleanupItems, orderedDupeFiles, protectionReason } from "./cleanupModel";
 import type { AnalysisReport, CleanupKind, DupeGroup, RuleHit } from "./cleanupModel";
 
 type Progress = { done: number; total: number };
@@ -8,8 +8,10 @@ type Props = {
   analysis: AnalysisReport;
   selected: Set<string>;
   dupeKeep: Record<string, string>;
+  referenceDirs: string[];
+  excludedDirs: string[];
+  busy: boolean;
   merging: boolean;
-  quickRunning: boolean;
   trashing: boolean;
   mergeProgress: Progress | null;
   onToggleOne: (path: string) => void;
@@ -49,8 +51,10 @@ export default function CleanupList({
   analysis,
   selected,
   dupeKeep,
+  referenceDirs,
+  excludedDirs,
+  busy,
   merging,
-  quickRunning,
   trashing,
   mergeProgress,
   onToggleOne,
@@ -89,21 +93,29 @@ export default function CleanupList({
         <div className="dupe-keep-group">
           <div className="cleanup-item-meta">{group.files.length} 份相同内容 · 单份 {humanSize(group.size)} · 当前保留 {files[0]}</div>
           <div className="dupe-keep-list">
-            {files.map((path, index) => (
-              <div className="dupe-keep-row" key={path}>
-                <label className="dupe-keep-choice">
-                  <input
-                    type="radio"
-                    name={`dupe-keep-${group.hash}`}
-                    checked={index === 0}
-                    onChange={() => onKeepDupe(group.hash, path)}
-                  />
-                  保留
-                </label>
-                <span className="mono" title={path}>{path}</span>
-                <button type="button" className="row-link" onClick={() => onReveal(path)}>定位</button>
-              </div>
-            ))}
+            {files.map((path, index) => {
+              const protection = protectionReason(path, referenceDirs, excludedDirs);
+              return (
+                <div className="dupe-keep-row" key={path}>
+                  <label className="dupe-keep-choice">
+                    <input
+                      type="radio"
+                      name={`dupe-keep-${group.hash}`}
+                      aria-label={`保留 ${path}`}
+                      checked={index === 0}
+                      disabled={busy || merging || trashing}
+                      onChange={() => onKeepDupe(group.hash, path)}
+                    />
+                    保留
+                  </label>
+                  <span className="mono" title={path}>
+                    {path}
+                    {protection && <small className="protected-path">{protection}</small>}
+                  </span>
+                  <button type="button" className="row-link" onClick={() => onReveal(path)}>定位</button>
+                </div>
+              );
+            })}
           </div>
         </div>
       );
@@ -133,17 +145,17 @@ export default function CleanupList({
         <h2 id="cleanup-items-heading">待处理项目</h2>
         <span>{counts.all} 项</span>
         {analysis.dupe_groups.length > 0 && (
-          <button className="primary section-action" onClick={onMerge} disabled={merging || quickRunning || trashing}>
+          <button className="primary section-action" onClick={onMerge} disabled={busy || merging || trashing}>
             {merging
               ? mergeProgress
                 ? `合并校验中 ${mergeProgress.done} / ${mergeProgress.total}…`
                 : "合并中…"
-              : `合并全部重复组 · 释放 ${humanSize(dupeBytes)}`}
+              : `合并全部重复组 · 副本 ${humanSize(dupeBytes)}`}
           </button>
         )}
       </div>
       <p className="section-desc">
-        按可处理空间排序。大文件（≥ 1 MiB）需要手动确认；重复组可更换保留副本，再选择删除冗余或合并为硬链接。
+        按逻辑大小排序。大文件（≥ 1 MiB）需要手动确认；重复组可更换保留副本，再选择移入回收站或合并为硬链接。
       </p>
 
       <div className="cleanup-list-toolbar">
@@ -171,8 +183,8 @@ export default function CleanupList({
             <thead>
               <tr>
                 <th className="check-cell"><span className="sr-only">选择</span></th>
-                <th>类型与风险</th>
-                <th className="size-cell">可处理空间</th>
+                <th>类型与判断</th>
+                <th className="size-cell">逻辑大小</th>
                 <th>项目与保留选择</th>
                 <th>建议依据</th>
                 <th>操作</th>
@@ -181,8 +193,10 @@ export default function CleanupList({
             <tbody>
               {filtered.slice(0, 50).map((item) => {
                 const dupeFiles = item.dupe ? orderedDupeFiles(item.dupe, dupeKeep) : [];
+                const selectableDupeFiles = dupeFiles.slice(1).filter((path) => !protectionReason(path, referenceDirs, excludedDirs));
+                const protection = item.kind === "dupe" ? null : protectionReason(item.path, referenceDirs, excludedDirs);
                 const checked = item.kind === "dupe"
-                  ? dupeFiles.length > 1 && dupeFiles.slice(1).every((path) => selected.has(path))
+                  ? selectableDupeFiles.length > 0 && selectableDupeFiles.every((path) => selected.has(path))
                   : selected.has(item.path);
                 return (
                   <tr key={item.id}>
@@ -191,20 +205,24 @@ export default function CleanupList({
                         type="checkbox"
                         aria-label={item.kind === "dupe" ? `选择重复组 ${item.dupe?.hash} 的冗余副本` : `选择${itemKindLabel(item.kind)} ${item.path}`}
                         checked={checked}
+                        disabled={busy || merging || trashing || Boolean(protection) || (item.kind === "dupe" && selectableDupeFiles.length === 0)}
                         onChange={() => item.kind === "dupe" && item.dupe ? onToggleDupeGroup(item.dupe) : onToggleOne(item.path)}
                       />
                     </td>
                     <td>
                       <span className="cleanup-kind">{itemKindLabel(item.kind)}</span>
-                      <span className={item.safe ? "status-safe cleanup-risk" : "status-review cleanup-risk"}>
-                        {item.safe ? "可安全清理" : "建议确认"}
+                      <span className={item.recommended ? "status-safe cleanup-risk" : "status-review cleanup-risk"}>
+                        {item.recommended ? "优先复核" : "人工确认"}
                       </span>
                     </td>
                     <td className="size-cell">
                       {humanSize(item.size)}
-                      {item.kind === "dupe" && <small>冗余部分</small>}
+                      {item.kind === "dupe" && <small>副本逻辑大小</small>}
                     </td>
-                    <td>{renderProject(item)}</td>
+                    <td>
+                      {renderProject(item)}
+                      {protection && <div className="protected-path">{protection}，不可选择</div>}
+                    </td>
                     <td>
                       <strong className="cleanup-reason-title">
                         {item.kind === "cache" ? item.cache?.rule_name : item.kind === "big" ? "需要人工判断" : "内容已校验一致"}
@@ -231,7 +249,7 @@ export default function CleanupList({
         <div className="section-empty">{items.length === 0 ? "没有发现可列出的项目。" : "当前筛选条件下没有匹配项目。"}</div>
       )}
       {filtered.length > 50 && <div className="summary">仅显示前 50 项，共 {filtered.length} 项；可继续筛选缩小范围。</div>}
-      <p className="cleanup-list-note">与重复组重合的大文件只显示一次；选择缓存目录后，其内部文件不重复计数。手动删除均进入系统回收站。</p>
+      <p className="cleanup-list-note">与重复组重合的大文件只显示一次；选择缓存目录后，其内部文件不重复计数。保护边界同时由界面与后端执行层校验。</p>
     </section>
   );
 }

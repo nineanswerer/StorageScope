@@ -7,6 +7,7 @@ pub mod diff;
 pub mod export;
 pub mod fixtures;
 pub mod model;
+pub mod plan;
 pub mod rules;
 pub mod scanner;
 pub mod snapshot;

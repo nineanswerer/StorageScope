@@ -1,5 +1,5 @@
 //! 空间合并（硬链接去重）：把内容完全相同的 N 份文件合并为磁盘上的一份实体。
-//! 与删除的根本区别：每个路径都保留，程序照常运行，空间真实释放。
+//! 与删除的根本区别：每个路径都保留；释放量按独立实体的分配大小核实。
 //! 安全约束：
 //! - 合并前重新计算双方全文哈希（分析后文件可能已变化，变化则跳过）；
 //! - 先改名备份 → 建硬链接 → 删备份；任一步失败自动回滚；
@@ -15,13 +15,18 @@ pub struct MergeItemResult {
     pub path: String,
     pub status: String, // merged / skipped_changed / skipped_linked / failed
     pub detail: Option<String>,
+    /// 仅在独立实体的分配大小已读取且备份已移除时给出。
+    pub verified_freed_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MergeReport {
     pub results: Vec<MergeItemResult>,
     pub merged_files: usize,
-    pub freed_bytes: u64,
+    /// 被合并副本的逻辑大小之和，不等同于物理释放。
+    pub merged_logical_bytes: u64,
+    /// 任一已合并项无法核实时为 None，避免用逻辑大小补齐。
+    pub verified_freed_bytes: Option<u64>,
     pub skipped: usize,
     pub failed: usize,
 }
@@ -30,7 +35,43 @@ fn abs(root: &Path, rel: &str) -> PathBuf {
     root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
 }
 
-/// 对单个副本执行 备份→硬链接→清理 合并。返回 (状态, 说明)。
+#[cfg(windows)]
+fn allocated_size(path: &Path) -> std::io::Result<Option<u64>> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileStandardInfo, GetFileInformationByHandleEx, FILE_STANDARD_INFO,
+    };
+    let file = std::fs::File::open(path)?;
+    let mut info: FILE_STANDARD_INFO = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+            FileStandardInfo,
+            &mut info as *mut _ as *mut core::ffi::c_void,
+            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(Some(info.AllocationSize.max(0) as u64))
+}
+
+#[cfg(not(windows))]
+fn allocated_size(_path: &Path) -> std::io::Result<Option<u64>> {
+    Ok(None)
+}
+
+fn item(path: String, status: &str, detail: Option<String>) -> MergeItemResult {
+    MergeItemResult {
+        path,
+        status: status.into(),
+        detail,
+        verified_freed_bytes: None,
+    }
+}
+
+/// 对单个副本执行 备份→硬链接→清理 合并。
 fn merge_one(
     root: &Path,
     anchor: &FileEntry,
@@ -41,29 +82,24 @@ fn merge_one(
     let anchor_abs = abs(root, &anchor.rel_path);
     let copy_abs = abs(root, &copy.rel_path);
 
-    // 已经是同一实体的路径不再重复合并，也不能虚报可释放空间。
     match (
         crate::rules::file_identity(&anchor_abs),
         crate::rules::file_identity(&copy_abs),
     ) {
         (Ok(Some(anchor_id)), Ok(Some(copy_id))) if anchor_id == copy_id => {
-            return MergeItemResult {
-                path: display,
-                status: "skipped_linked".into(),
-                detail: Some("原本就是同一硬链接，无需合并".into()),
-            };
+            return item(
+                display,
+                "skipped_linked",
+                Some("原本就是同一硬链接，无需合并".into()),
+            );
         }
         (Err(e), _) | (_, Err(e)) => {
-            return MergeItemResult {
-                path: display,
-                status: "failed".into(),
-                detail: Some(format!("文件实体校验失败：{e}")),
-            };
+            return item(display, "failed", Some(format!("文件实体校验失败：{e}")));
         }
         _ => {}
     }
 
-    // 合并前重新校验：双方必须保持分析时的大小与全文哈希，任何变化都跳过。
+    // 内容复核保持不变；分配大小只用于结果计量，不作为合并依据。
     let verified = (|| -> std::io::Result<bool> {
         let anchor_size = std::fs::metadata(&anchor_abs)?.len();
         let copy_size = std::fs::metadata(&copy_abs)?.len();
@@ -77,22 +113,18 @@ fn merge_one(
     match verified {
         Ok(true) => {}
         Ok(false) => {
-            return MergeItemResult {
-                path: display,
-                status: "skipped_changed".into(),
-                detail: Some("内容已与分析时不同，未合并".into()),
-            }
+            return item(
+                display,
+                "skipped_changed",
+                Some("内容已与分析时不同，未合并".into()),
+            );
         }
         Err(e) => {
-            return MergeItemResult {
-                path: display,
-                status: "failed".into(),
-                detail: Some(format!("校验失败：{e}")),
-            }
+            return item(display, "failed", Some(format!("校验失败：{e}")));
         }
     }
+    let allocated_before = allocated_size(&copy_abs).ok().flatten();
 
-    // 先独占创建空备份占位，避免 rename 在 Unix 上覆盖已有同名文件。
     let bak = copy_abs.with_extension("ss-merge-bak");
     let reservation = std::fs::OpenOptions::new()
         .write(true)
@@ -101,48 +133,46 @@ fn merge_one(
     match reservation {
         Ok(file) => drop(file),
         Err(e) => {
-            return MergeItemResult {
-                path: display,
-                status: "failed".into(),
-                detail: Some(format!("无法创建安全备份（同名文件可能已存在）：{e}")),
-            };
+            return item(
+                display,
+                "failed",
+                Some(format!("无法创建安全备份（同名文件可能已存在）：{e}")),
+            );
         }
     }
-    // 备份 → 硬链接 → 删备份；失败回滚
     if let Err(e) = std::fs::rename(&copy_abs, &bak) {
         let _ = std::fs::remove_file(&bak);
-        return MergeItemResult {
-            path: display,
-            status: "failed".into(),
-            detail: Some(format!("备份失败：{e}")),
-        };
+        return item(display, "failed", Some(format!("备份失败：{e}")));
     }
     match std::fs::hard_link(&anchor_abs, &copy_abs) {
         Ok(()) => {
-            let detail = match std::fs::remove_file(&bak) {
-                Ok(()) => None,
-                Err(e) => Some(format!("已合并，但备份文件残留（可手动删除）：{e}")),
+            let (detail, verified_freed_bytes) = match std::fs::remove_file(&bak) {
+                Ok(()) => (None, allocated_before),
+                Err(e) => (
+                    Some(format!("已合并，但备份文件残留（可手动删除）：{e}")),
+                    None,
+                ),
             };
             MergeItemResult {
                 path: display,
                 status: "merged".into(),
                 detail,
+                verified_freed_bytes,
             }
         }
         Err(e) => {
-            // 回滚：恢复原文件
             let rollback = std::fs::rename(&bak, &copy_abs);
-            MergeItemResult {
-                path: display,
-                status: "failed".into(),
-                detail: Some(match rollback {
+            item(
+                display,
+                "failed",
+                Some(match rollback {
                     Ok(()) => format!("硬链接失败（已回滚）：{e}"),
                     Err(re) => format!(
                         "硬链接失败：{e}；且回滚失败，备份在 {}：{re}",
                         bak.display()
                     ),
                 }),
-            }
+            )
         }
     }
 }
@@ -150,7 +180,7 @@ fn merge_one(
 /// 合并全部重复组。每组第一份为锚点保留原位，其余副本合并到锚点。
 pub fn merge_duplicates(root: &Path, groups: &[DupeGroup]) -> MergeReport {
     let mut results = Vec::new();
-    let mut freed_bytes = 0u64;
+    let mut merged_logical_bytes = 0u64;
     for g in groups {
         if g.files.len() < 2 {
             continue;
@@ -172,7 +202,7 @@ pub fn merge_duplicates(root: &Path, groups: &[DupeGroup]) -> MergeReport {
             };
             let r = merge_one(root, &anchor, &copy, g.hash);
             if r.status == "merged" {
-                freed_bytes += g.size;
+                merged_logical_bytes += g.size;
             }
             results.push(r);
         }
@@ -183,10 +213,25 @@ pub fn merge_duplicates(root: &Path, groups: &[DupeGroup]) -> MergeReport {
         .filter(|r| r.status.starts_with("skipped"))
         .count();
     let failed = results.iter().filter(|r| r.status == "failed").count();
+    let merged_results: Vec<_> = results.iter().filter(|r| r.status == "merged").collect();
+    let verified_freed_bytes = if merged_results
+        .iter()
+        .all(|r| r.verified_freed_bytes.is_some())
+    {
+        Some(
+            merged_results
+                .iter()
+                .filter_map(|r| r.verified_freed_bytes)
+                .sum(),
+        )
+    } else {
+        None
+    };
     MergeReport {
         results,
         merged_files,
-        freed_bytes,
+        merged_logical_bytes,
+        verified_freed_bytes,
         skipped,
         failed,
     }
@@ -218,7 +263,7 @@ mod tests {
 
         let report = merge_duplicates(root, &[group(root, 12, &["a.bin", "sub/b.bin"])]);
         assert_eq!(report.merged_files, 1);
-        assert_eq!(report.freed_bytes, 12);
+        assert_eq!(report.merged_logical_bytes, 12);
 
         // 两个路径都在，内容一致；改锚点，副本同步可见（同一实体）
         assert_eq!(fs::read(root.join("a.bin")).unwrap(), b"same-content");
@@ -258,7 +303,7 @@ mod tests {
 
         let report = merge_duplicates(root, &[group(root, 12, &["a.bin", "b.bin"])]);
         assert_eq!(report.merged_files, 0);
-        assert_eq!(report.freed_bytes, 0);
+        assert_eq!(report.merged_logical_bytes, 0);
         assert_eq!(report.failed, 1);
         assert_eq!(fs::read(root.join("a.bin")).unwrap(), b"same-content");
         assert_eq!(fs::read(root.join("b.bin")).unwrap(), b"same-content");
@@ -277,7 +322,7 @@ mod tests {
 
         let report = merge_duplicates(root, &[group(root, 12, &["a.bin", "b.bin"])]);
         assert_eq!(report.merged_files, 0);
-        assert_eq!(report.freed_bytes, 0);
+        assert_eq!(report.merged_logical_bytes, 0);
         assert_eq!(report.skipped, 1);
         assert_eq!(report.failed, 0);
         assert_eq!(report.results[0].status, "skipped_linked");

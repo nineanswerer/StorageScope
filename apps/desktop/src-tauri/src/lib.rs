@@ -25,6 +25,7 @@ fn resolve_within_root(root_path: &Path, rel: &str) -> Result<PathBuf, String> {
 }
 
 /// 回收站目标必须比扫描根更严格：允许定位根目录，但绝不允许删除整个扫描根。
+#[cfg(test)]
 fn resolve_trash_target(root_path: &Path, rel: &str) -> Result<PathBuf, String> {
     let canonical = resolve_within_root(root_path, rel)?;
     if canonical == root_path {
@@ -142,6 +143,7 @@ async fn analyze_cleanup(
     app: AppHandle,
     state: State<'_, ScanCancel>,
     path: String,
+    db: String,
     top: usize,
     dupe_min_mib: u64,
     skip_dupes: bool,
@@ -175,7 +177,13 @@ async fn analyze_cleanup(
                 serde_json::json!({ "done": done, "total": total }),
             );
         };
-        let report = if skip_dupes {
+        let baseline_snapshot_id = if db.trim().is_empty() {
+            None
+        } else {
+            let conn = snapshot::open(Path::new(&db)).map_err(|e| e.to_string())?;
+            snapshot::save(&conn, &outcome).map_err(|e| e.to_string())?
+        };
+        let mut report = if skip_dupes {
             storagescope_core::rules::analyze_light(&outcome, &tree, top)
         } else {
             storagescope_core::rules::analyze(
@@ -187,6 +195,7 @@ async fn analyze_cleanup(
                 Some(&mut dupe_cb),
             )
         };
+        report.baseline_snapshot_id = baseline_snapshot_id;
         serde_json::to_value(report).map_err(|e| e.to_string())
     })
     .await
@@ -213,42 +222,47 @@ fn export_diff(report: DiffReport, path: String, format: String) -> Result<(), S
     export::write_text(&PathBuf::from(path), &content).map_err(|e| e.to_string())
 }
 
-/// 清理执行（M5，M6 起异步化）：把扫描根目录下的相对路径移入系统回收站。
-/// 后端拼接绝对路径并校验目标必须仍在根目录内，防止路径逃逸。
-/// 大目录进回收站是"移动"操作，耗时与体积相关，放入阻塞线程池避免卡 UI。
+/// 由扫描报告与用户选择生成固定清理计划，复核后移入回收站。
+/// 报告只记录待清空大小，不把回收站动作写成已经释放空间。
 #[tauri::command]
-async fn move_to_trash(root: String, rel_paths: Vec<String>) -> Result<serde_json::Value, String> {
+async fn execute_cleanup_plan(
+    root: String,
+    analysis: storagescope_core::rules::AnalysisReport,
+    rel_paths: Vec<String>,
+    reference_dirs: Vec<String>,
+    excluded_dirs: Vec<String>,
+) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root_path = Path::new(&root)
-            .canonicalize()
-            .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
-        let mut abs = Vec::new();
-        for rel in &rel_paths {
-            abs.push(resolve_trash_target(&root_path, rel)?);
-        }
-        let report = storagescope_core::cleanup::move_to_trash(&abs);
+        let plan = storagescope_core::plan::build_cleanup_plan(
+            &analysis,
+            &rel_paths,
+            &reference_dirs,
+            &excluded_dirs,
+        )?;
+        let report = storagescope_core::plan::execute_cleanup_plan(Path::new(&root), &plan)?;
         serde_json::to_value(report).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// 空间合并（M10）：把重复文件组合并为硬链接，路径不动、空间释放。
-/// 合并前逐组重新校验全文哈希；执行期间通过 merge-progress 推送进度。
+/// 空间合并：先验证保留边界与路径，再逐组重新校验全文哈希。
 #[tauri::command]
 async fn merge_duplicates(
     app: AppHandle,
     root: String,
     groups: Vec<storagescope_core::rules::DupeGroup>,
+    reference_dirs: Vec<String>,
+    excluded_dirs: Vec<String>,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        storagescope_core::plan::validate_merge_groups(&groups, &reference_dirs, &excluded_dirs)?;
         let root_path = Path::new(&root)
             .canonicalize()
             .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
-        // 路径逃逸防护：所有组成员必须仍在扫描根目录内
-        for g in &groups {
-            for rel in &g.files {
-                resolve_within_root(&root_path, rel)?;
+        for group in &groups {
+            for rel in &group.files {
+                storagescope_core::plan::resolve_cleanup_target(&root_path, rel)?;
             }
         }
         let total: usize = groups.iter().map(|g| g.files.len().saturating_sub(1)).sum();
@@ -295,7 +309,7 @@ pub fn run() {
             list_snapshots,
             diff_snapshots,
             analyze_cleanup,
-            move_to_trash,
+            execute_cleanup_plan,
             merge_duplicates,
             reveal_in_explorer,
             export_tree,

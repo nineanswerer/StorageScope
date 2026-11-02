@@ -3,16 +3,22 @@ import assert from "node:assert/strict";
 import {
   buildCleanupItems,
   effectiveSelectedPaths,
+  normalizeCleanupPath,
   orderedDupeFiles,
+  protectionReason,
   selectedCleanupBytes,
   updateDupeKeepSelection,
+  withoutProtectedPaths,
 } from "../src/cleanupModel.ts";
 
 const emptyAnalysis = () => ({
+  scan_id: "test-scan",
+  baseline_snapshot_id: 1,
   cache_hits: [],
   big_files: [],
   dupe_groups: [],
-  reclaimable_bytes: 0,
+  candidate_logical_bytes: 0,
+  cleanup_targets: [],
   hashed_bytes: 0,
   hash_errors: 0,
 });
@@ -23,8 +29,8 @@ const cache = (rel_path, size) => ({
   rel_path,
   size,
   file_count: 1,
-  reason: "测试缓存",
-  safety: "SafeToDelete",
+  reason: "测试缓存，仅作人工判断线索",
+  safety: "ReviewAdvised",
 });
 
 const big = (rel_path, size) => ({ rel_path, name: rel_path.split("/").at(-1), size, modified: null, ext: "bin" });
@@ -90,4 +96,68 @@ test("64 位重复组哈希作为字符串保留完整精度", () => {
   const keep = { [preciseHash]: "b.bin" };
   assert.equal(preciseGroup.hash, preciseHash);
   assert.deepEqual(orderedDupeFiles(preciseGroup, keep), ["b.bin", "a.bin"]);
+});
+
+test("参考目录同时保护目录自身、后代和祖先", () => {
+  assert.equal(protectionReason("projects/originals/a.bin", ["projects/originals"], []), "参考目录保护");
+  assert.equal(protectionReason("projects/originals", ["projects/originals"], []), "参考目录保护");
+  assert.equal(protectionReason("projects", ["projects/originals"], []), "参考目录保护");
+  assert.equal(protectionReason("projects-other/a.bin", ["projects/originals"], []), null);
+});
+
+test("排除目录保护内部项目，也禁止选择其祖先目录绕过边界", () => {
+  assert.equal(protectionReason("work/private/a.bin", [], ["work/private"]), "排除目录");
+  assert.equal(protectionReason("work", [], ["work/private"]), "排除目录");
+  assert.deepEqual([...withoutProtectedPaths(new Set(["work/private/a.bin", "work", "other.bin"]), [], ["work/private"])], ["other.bin"]);
+});
+
+test("路径规范化统一分隔符并去除当前目录片段", () => {
+  assert.equal(normalizeCleanupPath(" originals\\drafts/./a.bin/ "), "originals/drafts/a.bin");
+  assert.equal(selectedCleanupBytes({ ...emptyAnalysis(), big_files: [big("originals/a.bin", 200)] }, new Set(["originals\\a.bin"]), {}), 0);
+});
+
+test("保护目录和已排除路径不进入实际选择统计", () => {
+  const analysis = emptyAnalysis();
+  analysis.big_files = [big("originals/a.bin", 300), big("cache/b.bin", 400), big("other.bin", 100)];
+  const selected = new Set(["originals/a.bin", "cache/b.bin", "other.bin"]);
+  const allowed = withoutProtectedPaths(selected, ["originals"], ["cache"]);
+  assert.deepEqual([...allowed], ["other.bin"]);
+  assert.equal(selectedCleanupBytes(analysis, allowed, {}), 100);
+});
+
+test("缓存目录命中保持建议确认，不宣称安全删除", () => {
+  const analysis = emptyAnalysis();
+  analysis.cache_hits = [cache("cache", 400)];
+  const [item] = buildCleanupItems(analysis);
+  assert.equal(item.recommended, false);
+  assert.equal(item.cache.safety, "ReviewAdvised");
+});
+
+test("合并后撤下副本及其执行基线，不把它重新列为大文件", async () => {
+  const { reconcileAnalysisAfterCleanup } = await import("../src/cleanupModel.ts");
+  const analysis = emptyAnalysis();
+  analysis.cache_hits = [cache("Backups", 200)];
+  analysis.big_files = [big("Packages/a.bin", 200), big("Backups/a.bin", 200), big("Archive/a.bin", 200)];
+  analysis.dupe_groups = [group(["Packages/a.bin", "Backups/a.bin", "Archive/a.bin"], 200)];
+  analysis.cleanup_targets = analysis.big_files.map((file) => ({ rel_path: file.rel_path }));
+  analysis.candidate_logical_bytes = 600;
+  const next = reconcileAnalysisAfterCleanup(analysis, new Set(), new Set(["Backups/a.bin", "Archive/a.bin"]), { 42: "Packages/a.bin" });
+  assert.deepEqual(next.big_files.map((file) => file.rel_path), ["Packages/a.bin"]);
+  assert.equal(next.dupe_groups.length, 0);
+  assert.deepEqual(next.cleanup_targets.map((target) => target.rel_path), ["Packages/a.bin"]);
+  assert.equal(next.candidate_logical_bytes, 200);
+  assert.deepEqual(buildCleanupItems(next).map((item) => item.id).sort(), ["big:Packages/a.bin", "cache:Backups"]);
+});
+
+test("回收站结果按目录撤下候选和基线，但保留被跳过的变化目录", async () => {
+  const { reconcileAnalysisAfterCleanup } = await import("../src/cleanupModel.ts");
+  const analysis = emptyAnalysis();
+  analysis.cache_hits = [cache("cache", 400), cache("Backups", 200)];
+  analysis.big_files = [big("cache/a.bin", 300), big("other.bin", 100)];
+  analysis.cleanup_targets = [{ rel_path: "cache" }, { rel_path: "cache/a.bin" }, { rel_path: "other.bin" }];
+  const next = reconcileAnalysisAfterCleanup(analysis, new Set(["cache", "other.bin"]), new Set(), {});
+  assert.deepEqual(next.cache_hits.map((hit) => hit.rel_path), ["Backups"]);
+  assert.equal(next.big_files.length, 0);
+  assert.deepEqual(next.cleanup_targets, []);
+  assert.equal(next.candidate_logical_bytes, 200);
 });

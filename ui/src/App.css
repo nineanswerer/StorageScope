@@ -232,7 +232,7 @@ tbody tr:hover { background: var(--surface-2); }
   text-overflow: ellipsis;
 }
 
-/* 一键释放是结果与操作共用的横带，不是独立营销卡片。 */
+/* 候选项与操作共用的信息横带，不把估算写成已释放空间。 */
 .action-panel {
   display: flex;
   flex-wrap: wrap;
@@ -249,9 +249,9 @@ tbody tr:hover { background: var(--surface-2); }
 .action-figure b { color: var(--text); font-size: 24px; font-weight: 600; margin-left: 8px; font-variant-numeric: tabular-nums; }
 .action-sub { font-size: 12px; color: var(--faint); margin-top: 4px; }
 .action-btns { display: flex; gap: 10px; flex-wrap: wrap; }
-.action-note { flex-basis: 100%; font-size: 12px; color: var(--faint); }
+.action-note { flex-basis: 100%; font-size: 12px; color: var(--faint); overflow-wrap: anywhere; }
 
-/* ---- 清理建议：分析设置 → 安全释放 → 手动确认 → 分类明细 ---- */
+/* ---- 清理建议：分析设置 → 保留边界 → 手动确认 → 结果复核 ---- */
 
 .cleanup-panel { padding-bottom: 0; }
 .cleanup-settings { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
@@ -262,6 +262,30 @@ tbody tr:hover { background: var(--surface-2); }
 .dupe-threshold input:disabled { opacity: 0.42; }
 .cleanup-progress { padding: 12px 0; border-top: 1px solid var(--line); }
 .cleanup-empty { margin-top: 16px; }
+
+.protection-editor { padding: 16px 0 18px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.protection-copy { display: flex; align-items: baseline; gap: 14px; margin-bottom: 12px; }
+.protection-copy h2 { flex: 0 0 auto; margin: 0; font-size: 14px; }
+.protection-copy p { margin: 0; color: var(--faint); font-size: 12px; }
+.protection-add { display: flex; gap: 8px; flex-wrap: wrap; }
+.protection-add input { width: min(360px, 100%); }
+.protection-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 28px; margin-top: 12px; }
+.protection-list { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; color: var(--faint); font-size: 12px; }
+.protection-list > strong { color: var(--muted); font-weight: 500; }
+.protection-chip { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid var(--line); background: var(--surface-1); }
+.protection-chip > span { padding: 3px 7px; overflow-wrap: anywhere; }
+.protection-chip button { padding: 2px 7px; border: 0; border-left: 1px solid var(--line); border-radius: 0; }
+.protected-path { display: block; margin-top: 3px; color: var(--warning); font-size: 11px; font-weight: 400; }
+input:disabled { cursor: not-allowed; opacity: 0.48; }
+
+.cleanup-result-review { padding: 22px 0; border-bottom: 1px solid var(--line); }
+.cleanup-result-review .section-heading button { margin-left: auto; }
+.cleanup-result-review .cleanup-breakdown { margin-top: 14px; border-top: 1px solid var(--line); }
+.execution-details { margin-top: 12px; color: var(--muted); font-size: 12px; }
+.execution-details summary { cursor: pointer; }
+.execution-details ul { margin: 8px 0 0; padding: 0; list-style: none; }
+.execution-details li { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr); gap: 18px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.execution-details li > span { overflow-wrap: anywhere; }
 
 .cleanup-breakdown { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; background: var(--surface-1); border-bottom: 1px solid var(--line-strong); }
 .cleanup-breakdown > div { padding: 13px 20px 15px; }

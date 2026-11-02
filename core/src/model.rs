@@ -89,3 +89,59 @@ pub struct DirStat {
     pub type_sizes: std::collections::BTreeMap<String, u64>,
     pub children: Vec<DirStat>,
 }
+
+/// 清理目标的扫描基线。预览与执行传递同一份期望，执行端重新读取并核对。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TargetExpectation {
+    pub rel_path: String,
+    pub is_dir: bool,
+    pub logical_size: u64,
+    pub file_count: u64,
+    pub modified: Option<i64>,
+    /// 目录后代清单的确定性指纹；单文件使用大小、时间与实体身份。
+    pub manifest_hash: Option<String>,
+    pub file_id: Option<String>,
+    /// 原始扫描是否足以支撑安全执行；重解析点或读取异常会令其失败。
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CleanupAction {
+    MoveToTrash,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannedTarget {
+    pub expectation: TargetExpectation,
+    pub action: CleanupAction,
+}
+
+/// 用户确认后的不可变清理计划。执行端不得按名称重新发现或扩大目标。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanupPlan {
+    pub scan_id: String,
+    pub targets: Vec<PlannedTarget>,
+    pub reference_dirs: Vec<String>,
+    pub excluded_dirs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanupItemResult {
+    pub path: String,
+    pub status: String,
+    pub logical_bytes: u64,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanupExecutionReport {
+    pub scan_id: String,
+    pub results: Vec<CleanupItemResult>,
+    pub succeeded: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub selected_logical_bytes: u64,
+    pub pending_recycle_bin_bytes: u64,
+    /// 回收站动作本身不能证明空间已释放，因此该值保持 None。
+    pub verified_freed_bytes: Option<u64>,
+}

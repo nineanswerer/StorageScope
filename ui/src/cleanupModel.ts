@@ -5,7 +5,7 @@ export type RuleHit = {
   size: number;
   file_count: number;
   reason: string;
-  safety: "SafeToDelete" | "ReviewAdvised";
+  safety: "Recommended" | "ReviewAdvised";
 };
 
 export type BigFile = {
@@ -18,11 +18,25 @@ export type BigFile = {
 
 export type DupeGroup = { size: number; hash: string; files: string[]; wasted: number };
 
+export type TargetExpectation = {
+  rel_path: string;
+  is_dir: boolean;
+  logical_size: number;
+  file_count: number;
+  modified: number | null;
+  manifest_hash: string | null;
+  file_id: string | null;
+  complete: boolean;
+};
+
 export type AnalysisReport = {
+  scan_id: string;
+  baseline_snapshot_id: number | null;
   cache_hits: RuleHit[];
   big_files: BigFile[];
   dupe_groups: DupeGroup[];
-  reclaimable_bytes: number;
+  candidate_logical_bytes: number;
+  cleanup_targets: TargetExpectation[];
   hashed_bytes: number;
   hash_errors: number;
 };
@@ -34,7 +48,7 @@ export type CleanupItem = {
   kind: CleanupKind;
   path: string;
   size: number;
-  safe: boolean;
+  recommended: boolean;
   reason: string;
   searchText: string;
   cache?: RuleHit;
@@ -81,6 +95,36 @@ export function effectiveSelectedPaths(selected: Set<string>, cacheHits: RuleHit
   }));
 }
 
+export function normalizeCleanupPath(path: string): string {
+  return path.trim().replace(/\\/g, "/").split("/").filter((part) => part && part !== ".").join("/").replace(/\/+$/, "");
+}
+
+function pathWithin(path: string, dir: string): boolean {
+  return path === dir || path.startsWith(`${dir}/`);
+}
+
+/** 与核心层一致：保护目录本身、后代和祖先目标都不能进入执行清单。 */
+export function protectionReason(path: string, referenceDirs: string[], excludedDirs: string[]): string | null {
+  const normalized = normalizeCleanupPath(path);
+  for (const raw of referenceDirs) {
+    const dir = normalizeCleanupPath(raw);
+    if (dir && (pathWithin(normalized, dir) || pathWithin(dir, normalized))) return "参考目录保护";
+  }
+  for (const raw of excludedDirs) {
+    const dir = normalizeCleanupPath(raw);
+    if (dir && (pathWithin(normalized, dir) || pathWithin(dir, normalized))) return "排除目录";
+  }
+  return null;
+}
+
+export function withoutProtectedPaths(
+  selected: Set<string>,
+  referenceDirs: string[],
+  excludedDirs: string[],
+): Set<string> {
+  return new Set([...selected].filter((path) => !protectionReason(path, referenceDirs, excludedDirs)));
+}
+
 /** 按唯一相对路径计算，缓存、大文件与重复组重合时不重复累计。 */
 export function selectedCleanupBytes(
   analysis: AnalysisReport,
@@ -102,6 +146,34 @@ export function selectedCleanupBytes(
   return total;
 }
 
+/** 执行后同步撤下失效目标，避免已合并副本又以大文件身份回到候选清单。 */
+export function reconcileAnalysisAfterCleanup(
+  analysis: AnalysisReport,
+  removedPaths: Set<string>,
+  mergedPaths: Set<string>,
+  keepByGroup: Record<string, string>,
+): AnalysisReport {
+  const isGone = (path: string) => [...removedPaths].some((dir) => path === dir || path.startsWith(`${dir}/`));
+  const cacheHits = analysis.cache_hits.filter((hit) => !isGone(hit.rel_path));
+  const bigFiles = analysis.big_files.filter((file) => !isGone(file.rel_path) && !mergedPaths.has(file.rel_path));
+  const dupeGroups = analysis.dupe_groups
+    .map((group) => {
+      const files = orderedDupeFiles(group, keepByGroup)
+        .filter((path, index) => !isGone(path) && (index === 0 || !mergedPaths.has(path)));
+      return { ...group, files, wasted: group.size * Math.max(0, files.length - 1) };
+    })
+    .filter((group) => group.files.length > 1);
+  return {
+    ...analysis,
+    cache_hits: cacheHits,
+    big_files: bigFiles,
+    dupe_groups: dupeGroups,
+    candidate_logical_bytes: cacheHits.reduce((sum, hit) => sum + hit.size, 0)
+      + dupeGroups.reduce((sum, group) => sum + group.wasted, 0),
+    cleanup_targets: analysis.cleanup_targets.filter((target) => !isGone(target.rel_path) && !mergedPaths.has(target.rel_path)),
+  };
+}
+
 /**
  * 汇总为一张待处理清单。重复组中的文件不再以大文件身份重复出现；
  * 缓存与重复组可能重叠，选择时由 effectiveSelectedPaths 去除目录内部重复项。
@@ -113,7 +185,7 @@ export function buildCleanupItems(analysis: AnalysisReport): CleanupItem[] {
     kind: "cache",
     path: hit.rel_path,
     size: hit.size,
-    safe: hit.safety === "SafeToDelete",
+    recommended: hit.safety === "Recommended",
     reason: hit.reason,
     searchText: `${hit.rel_path} ${hit.rule_name} ${hit.reason}`.toLocaleLowerCase("zh-CN"),
     cache: hit,
@@ -125,7 +197,7 @@ export function buildCleanupItems(analysis: AnalysisReport): CleanupItem[] {
       kind: "big",
       path: file.rel_path,
       size: file.size,
-      safe: false,
+      recommended: false,
       reason: "仅表示占用较大，不代表文件无用；确认后才会移入回收站。",
       searchText: `${file.rel_path} ${file.name} ${file.ext ?? ""}`.toLocaleLowerCase("zh-CN"),
       big: file,
@@ -135,8 +207,8 @@ export function buildCleanupItems(analysis: AnalysisReport): CleanupItem[] {
     kind: "dupe",
     path: group.files[0] ?? "",
     size: group.wasted,
-    safe: false,
-    reason: "内容哈希一致；选择保留一份，其余副本可移入回收站或合并为硬链接。",
+    recommended: false,
+    reason: "内容哈希一致；相同内容不自动等于路径多余，每组必须保留一份。",
     searchText: group.files.join(" ").toLocaleLowerCase("zh-CN"),
     dupe: group,
   }));
