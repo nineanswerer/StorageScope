@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { buildCleanupItems, orderedDupeFiles, protectionReason } from "./cleanupModel";
+import { buildCleanupItems, orderedDupeFiles, protectionReason, selectedDupeGroups } from "./cleanupModel";
 import type { AnalysisReport, CleanupKind, DupeGroup, RuleHit } from "./cleanupModel";
 
 type Progress = { done: number; total: number };
@@ -77,7 +77,11 @@ export default function CleanupList({
     const normalized = query.trim().toLocaleLowerCase("zh-CN");
     return items.filter((item) => (filter === "all" || item.kind === filter) && (!normalized || item.searchText.includes(normalized)));
   }, [filter, items, query]);
-  const dupeBytes = analysis.dupe_groups.reduce((sum, group) => sum + group.wasted, 0);
+  const mergeGroups = useMemo(
+    () => selectedDupeGroups(analysis.dupe_groups, selected, dupeKeep),
+    [analysis.dupe_groups, dupeKeep, selected],
+  );
+  const dupeBytes = mergeGroups.reduce((sum, group) => sum + group.wasted, 0);
 
   function itemKindLabel(kind: CleanupKind): string {
     if (kind === "big") return "大文件";
@@ -145,17 +149,23 @@ export default function CleanupList({
         <h2 id="cleanup-items-heading">待处理项目</h2>
         <span>{counts.all} 项</span>
         {analysis.dupe_groups.length > 0 && (
-          <button className="primary section-action" onClick={onMerge} disabled={busy || merging || trashing}>
+          <button
+            className="primary section-action"
+            onClick={onMerge}
+            disabled={mergeGroups.length === 0 || busy || merging || trashing}
+            title={mergeGroups.length === 0 ? "先完整勾选至少一个重复组的冗余副本" : "只合并完整勾选的重复组"}
+          >
             {merging
               ? mergeProgress
                 ? `合并校验中 ${mergeProgress.done} / ${mergeProgress.total}…`
                 : "合并中…"
-              : `合并全部重复组 · 副本 ${humanSize(dupeBytes)}`}
+              : `合并已选重复组 · ${mergeGroups.length} 组 · ${humanSize(dupeBytes)}`}
           </button>
         )}
       </div>
       <p className="section-desc">
-        按逻辑大小排序。大文件（≥ 1 MiB）需要手动确认；重复组可更换保留副本，再选择移入回收站或合并为硬链接。
+        按逻辑大小排序。重复组可更换保留副本，再选择移入回收站或合并为硬链接。{analysis.dupe_groups.length > 0 &&
+          (mergeGroups.length > 0 ? `已完整选择 ${mergeGroups.length} 组；其他组不参与合并。` : "请先完整勾选重复组的冗余副本，再执行合并。")}
       </p>
 
       <div className="cleanup-list-toolbar">

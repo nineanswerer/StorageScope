@@ -82,6 +82,20 @@ export function updateDupeKeepSelection(
   return next;
 }
 
+/** 只有当前保留项以外的所有副本都已勾选，才允许整组合并。 */
+export function selectedDupeGroups(
+  groups: DupeGroup[],
+  selected: Set<string>,
+  keepByGroup: Record<string, string>,
+): DupeGroup[] {
+  return groups.flatMap((group) => {
+    const files = orderedDupeFiles(group, keepByGroup);
+    return files.length > 1 && files.slice(1).every((path) => selected.has(path))
+      ? [{ ...group, files }]
+      : [];
+  });
+}
+
 /** 已选缓存目录包含的文件不重复进入删除队列，也不重复计算体积。 */
 export function effectiveSelectedPaths(selected: Set<string>, cacheHits: RuleHit[]): Set<string> {
   const normalize = (path: string) => path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -103,15 +117,15 @@ function pathWithin(path: string, dir: string): boolean {
   return path === dir || path.startsWith(`${dir}/`);
 }
 
-/** 与核心层一致：保护目录本身、后代和祖先目标都不能进入执行清单。 */
+/** 与 Windows 核心层一致：保护比较不区分大小写，同时保护后代和祖先目标。 */
 export function protectionReason(path: string, referenceDirs: string[], excludedDirs: string[]): string | null {
-  const normalized = normalizeCleanupPath(path);
+  const normalized = normalizeCleanupPath(path).toLowerCase();
   for (const raw of referenceDirs) {
-    const dir = normalizeCleanupPath(raw);
+    const dir = normalizeCleanupPath(raw).toLowerCase();
     if (dir && (pathWithin(normalized, dir) || pathWithin(dir, normalized))) return "参考目录保护";
   }
   for (const raw of excludedDirs) {
-    const dir = normalizeCleanupPath(raw);
+    const dir = normalizeCleanupPath(raw).toLowerCase();
     if (dir && (pathWithin(normalized, dir) || pathWithin(dir, normalized))) return "排除目录";
   }
   return null;

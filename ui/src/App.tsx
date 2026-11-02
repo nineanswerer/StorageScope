@@ -15,6 +15,7 @@ import {
   protectionReason,
   reconcileAnalysisAfterCleanup,
   selectedCleanupBytes,
+  selectedDupeGroups,
   updateDupeKeepSelection,
   withoutProtectedPaths,
 } from "./cleanupModel";
@@ -240,20 +241,17 @@ export default function App() {
 
   async function doMerge() {
     if (!analysis || analysis.dupe_groups.length === 0 || scanning || analyzing || trashing || merging) return;
-    const groups = analysis.dupe_groups.map((group) => ({
-      ...group,
-      files: orderedDupeFiles(group, dupeKeep),
-    }));
-    for (const group of groups) {
-      const protectedCopy = group.files.slice(1).find((rel) => protectionReason(rel, referenceDirs, excludedDirs));
-      if (protectedCopy) {
-        setMessage(`${protectedCopy} 位于保留范围，请把它设为该组保留项后再合并。`);
-        return;
-      }
+    const groups = selectedDupeGroups(analysis.dupe_groups, allowedSelected, dupeKeep);
+    if (groups.length === 0) {
+      setMessage("请先完整勾选至少一个重复组的冗余副本；部分选择的组不会参与合并。");
+      return;
     }
+    const copies = groups.flatMap((group) => group.files.slice(1));
     const totalWasted = groups.reduce((sum, group) => sum + group.wasted, 0);
+    const preview = copies.slice(0, 8).join("\n");
+    const remaining = copies.length > 8 ? `\n另有 ${copies.length - 8} 个副本` : "";
     if (!window.confirm(
-      `合并 ${groups.length} 组重复文件？\n副本逻辑大小 ${humanSize(totalWasted)}，实际分配空间以执行结果为准。\n\n所有路径保留，但此后通过任一路径修改内容，其他硬链接路径也会看到变化。合并前重新校验全文，失败自动回滚。`
+      `合并已选的 ${groups.length} 组、${copies.length} 个副本？\n副本逻辑大小 ${humanSize(totalWasted)}，实际分配空间以执行结果为准。\n\n${preview}${remaining}\n\n所有路径保留，但此后通过任一路径修改内容，其他硬链接路径也会看到变化。合并前重新校验全文，失败自动回滚。`
     )) return;
     setMerging(true);
     setMessage("");

@@ -7,6 +7,7 @@ import {
   orderedDupeFiles,
   protectionReason,
   selectedCleanupBytes,
+  selectedDupeGroups,
   updateDupeKeepSelection,
   withoutProtectedPaths,
 } from "../src/cleanupModel.ts";
@@ -90,6 +91,38 @@ test("已选重复组更换保留副本后仍保持整组选择", () => {
   assert.equal(selectedCleanupBytes(analysis, restored, {}), 600);
 });
 
+test("只有完整勾选冗余副本的重复组可以合并", () => {
+  const groups = [group(["a.bin", "b.bin", "c.bin"])];
+  assert.deepEqual(selectedDupeGroups(groups, new Set(["b.bin", "c.bin"]), {}), groups);
+  assert.deepEqual(selectedDupeGroups(groups, new Set(["b.bin"]), {}), []);
+  assert.deepEqual(selectedDupeGroups(groups, new Set(), {}), []);
+});
+
+test("部分选择的组不会被其他完整组带入合并", () => {
+  const first = group(["a.bin", "b.bin"]);
+  const second = { ...group(["c.bin", "d.bin", "e.bin"]), hash: "43" };
+  const actual = selectedDupeGroups([first, second], new Set(["b.bin", "d.bin"]), {});
+  assert.deepEqual(actual, [first]);
+});
+
+test("更换保留项后按新的副本集合确定整组选择", () => {
+  const original = group(["a.bin", "b.bin", "c.bin"]);
+  const selected = updateDupeKeepSelection(new Set(["b.bin", "c.bin"]), original, {}, "c.bin");
+  assert.deepEqual([...selected].sort(), ["a.bin", "b.bin"]);
+  assert.deepEqual(
+    selectedDupeGroups([original], selected, { 42: "c.bin" }),
+    [{ ...original, files: ["c.bin", "a.bin", "b.bin"] }],
+  );
+});
+
+test("范围外的已选路径与展示筛选不会扩大合并范围", () => {
+  const shown = group(["visible/a.bin", "visible/b.bin"]);
+  const hidden = { ...group(["other/a.bin", "other/b.bin"]), hash: "43" };
+  const selected = new Set(["visible/b.bin", "other/b.bin", "unrelated.bin"]);
+  assert.deepEqual(selectedDupeGroups([shown, hidden], selected, {}), [shown, hidden]);
+  assert.deepEqual(selectedDupeGroups([shown], new Set(["other/b.bin"]), {}), []);
+});
+
 test("64 位重复组哈希作为字符串保留完整精度", () => {
   const preciseHash = "18446744073709551614";
   const preciseGroup = { ...group(["a.bin", "b.bin"]), hash: preciseHash };
@@ -103,6 +136,13 @@ test("参考目录同时保护目录自身、后代和祖先", () => {
   assert.equal(protectionReason("projects/originals", ["projects/originals"], []), "参考目录保护");
   assert.equal(protectionReason("projects", ["projects/originals"], []), "参考目录保护");
   assert.equal(protectionReason("projects-other/a.bin", ["projects/originals"], []), null);
+});
+
+test("Windows 保护目录输入不区分大小写", () => {
+  assert.equal(protectionReason("cache", ["Cache/Originals"], []), "参考目录保护");
+  assert.equal(protectionReason("cache/originals/a.bin", ["Cache/Originals"], []), "参考目录保护");
+  assert.equal(protectionReason("cache", [], ["Cache/Originals"]), "排除目录");
+  assert.deepEqual([...withoutProtectedPaths(new Set(["cache", "other.bin"]), ["Cache/Originals"], [])], ["other.bin"]);
 });
 
 test("排除目录保护内部项目，也禁止选择其祖先目录绕过边界", () => {
