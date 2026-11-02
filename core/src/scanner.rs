@@ -164,7 +164,7 @@ impl Scanner {
                                         .extension()
                                         .map(|e| e.to_string_lossy().to_lowercase()),
                                 });
-                                if files.len() as u64 % self.config.progress_every == 0 {
+                                if (files.len() as u64).is_multiple_of(self.config.progress_every) {
                                     on_progress(
                                         Progress {
                                             files: files.len() as u64,

@@ -243,7 +243,7 @@ fn main() {
                         if count > 5000 {
                             println!("BIGDIR {} 个条目：{}", count, d.display());
                         }
-                        if dirs % 2000 == 0 {
+                        if dirs.is_multiple_of(2000) {
                             eprintln!(
                                 "… dirs={} files={} 待处理={} 耗时{:?}",
                                 dirs,

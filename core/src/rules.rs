@@ -155,7 +155,7 @@ pub fn find_cache_hits(tree: &DirStat) -> Vec<RuleHit> {
     for child in &tree.children {
         walk_tree(child, &mut hits);
     }
-    hits.sort_by(|a, b| b.size.cmp(&a.size));
+    hits.sort_by_key(|a| std::cmp::Reverse(a.size));
     hits
 }
 
@@ -194,7 +194,7 @@ pub fn find_big_files(outcome: &ScanOutcome, top_n: usize) -> Vec<FileEntry> {
         .filter(|file| file.size >= BIG_FILE_MIN_SIZE)
         .cloned()
         .collect();
-    files.sort_by(|a, b| b.size.cmp(&a.size));
+    files.sort_by_key(|a| std::cmp::Reverse(a.size));
     files.truncate(top_n);
     files
 }
@@ -227,7 +227,7 @@ struct SharedProgress<'a> {
 impl<'a> SharedProgress<'a> {
     fn tick(&self) {
         let done = self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        if done % 200 == 0 {
+        if done.is_multiple_of(200) {
             if let Some(cb) = self.cb.lock().unwrap().as_deref_mut() {
                 cb(done, self.total);
             }
@@ -237,8 +237,8 @@ impl<'a> SharedProgress<'a> {
 
 /// 用 scoped 线程池对文件逐个求哈希，保持输入顺序返回结果。
 /// 索引窃取（fetch_add）实现负载均衡：大文件线程不会被小文件线程等。
-fn par_hash<'a, F>(
-    files: &[&'a FileEntry],
+fn par_hash<F>(
+    files: &[&FileEntry],
     progress: &SharedProgress,
     hash_fn: F,
 ) -> Vec<std::io::Result<u64>>
@@ -384,10 +384,12 @@ pub fn find_duplicates<'a>(
             });
         }
     }
-    final_groups.sort_by(|a, b| b.wasted.cmp(&a.wasted));
+    final_groups.sort_by_key(|a| std::cmp::Reverse(a.wasted));
     (final_groups, hashed_bytes, hash_errors)
 }
 
+// 纯数据装配函数保留显式参数，避免为减少参数计数引入额外可变状态。
+#[allow(clippy::too_many_arguments)]
 fn finish_report(
     root: &Path,
     outcome: &ScanOutcome,
