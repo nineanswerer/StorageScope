@@ -136,13 +136,6 @@ const CACHE_RULES: &[CacheRule] = &[
         reason: "通常可重新安装，但需确认项目、包管理器与离线依赖需求",
         safety: Safety::ReviewAdvised,
     },
-    CacheRule {
-        id: "generic.backups",
-        name: "备份命名目录",
-        dir_names: &["backups", "backup"],
-        reason: "备份可能是唯一副本；必须人工确认，不按自动备份处理",
-        safety: Safety::ReviewAdvised,
-    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -361,27 +354,11 @@ pub fn find_duplicates<'a>(
     }
     let mut final_groups: Vec<DupeGroup> = Vec::new();
     for ((size, hash), files) in by_hash {
-        let mut files = files;
-        files.sort();
-        let mut identities: Vec<(u64, u64)> = Vec::new();
-        files.retain(|rel| {
-            let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-            match file_identity(&path) {
-                Ok(Some(identity)) if identities.contains(&identity) => false,
-                Ok(Some(identity)) => {
-                    identities.push(identity);
-                    true
-                }
-                _ => true,
-            }
-        });
-        if files.len() >= 2 {
-            final_groups.push(DupeGroup {
-                size,
-                hash,
-                wasted: size * (files.len() as u64 - 1),
-                files,
-            });
+        let file_count = files.len() as u64;
+        match verified_duplicate_group(root, size, hash, files) {
+            Ok(Some(group)) => final_groups.push(group),
+            Ok(None) => {}
+            Err(_) => hash_errors += file_count,
         }
     }
     final_groups.sort_by_key(|a| std::cmp::Reverse(a.wasted));
@@ -617,6 +594,66 @@ pub fn hash_file_for_merge(path: &Path) -> std::io::Result<u64> {
     Ok(h.digest())
 }
 
+/// 哈希只负责筛选；最终判等必须逐字节读取双方内容。
+pub fn files_have_same_content(left: &Path, right: &Path) -> std::io::Result<bool> {
+    if std::fs::metadata(left)?.len() != std::fs::metadata(right)?.len() {
+        return Ok(false);
+    }
+    let mut left_file = std::fs::File::open(left)?;
+    let mut right_file = std::fs::File::open(right)?;
+    let mut left_buf = vec![0u8; 1024 * 1024];
+    let mut right_buf = vec![0u8; 1024 * 1024];
+    loop {
+        let count = left_file.read(&mut left_buf)?;
+        if count == 0 {
+            return Ok(true);
+        }
+        right_file.read_exact(&mut right_buf[..count])?;
+        if left_buf[..count] != right_buf[..count] {
+            return Ok(false);
+        }
+    }
+}
+
+fn verified_duplicate_group(
+    root: &Path,
+    size: u64,
+    hash: u64,
+    mut files: Vec<String>,
+) -> std::io::Result<Option<DupeGroup>> {
+    files.sort();
+    let Some(anchor) = files.first() else {
+        return Ok(None);
+    };
+    let anchor_path = root.join(anchor.replace('/', std::path::MAIN_SEPARATOR_STR));
+    for rel in files.iter().skip(1) {
+        let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if !files_have_same_content(&anchor_path, &path)? {
+            // 同一哈希出现不同内容时整组撤下，避免组标识和保留选择产生歧义。
+            return Ok(None);
+        }
+    }
+
+    let mut identities: Vec<(u64, u64)> = Vec::new();
+    files.retain(|rel| {
+        let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        match file_identity(&path) {
+            Ok(Some(identity)) if identities.contains(&identity) => false,
+            Ok(Some(identity)) => {
+                identities.push(identity);
+                true
+            }
+            _ => true,
+        }
+    });
+    Ok((files.len() >= 2).then(|| DupeGroup {
+        wasted: size * (files.len() as u64 - 1),
+        size,
+        hash,
+        files,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,5 +683,19 @@ mod tests {
             }
             assert_eq!(h.digest(), oneshot, "chunk size {chunk}");
         }
+    }
+
+    #[test]
+    fn same_hash_with_different_content_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"same-content").unwrap();
+        std::fs::write(dir.path().join("b.bin"), b"DIFF-content").unwrap();
+        let group =
+            verified_duplicate_group(dir.path(), 12, 42, vec!["a.bin".into(), "b.bin".into()])
+                .unwrap();
+        assert!(group.is_none());
+        assert!(
+            !files_have_same_content(&dir.path().join("a.bin"), &dir.path().join("b.bin")).unwrap()
+        );
     }
 }

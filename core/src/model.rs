@@ -116,6 +116,14 @@ pub struct PlannedTarget {
     pub action: CleanupAction,
 }
 
+/// 重复组删除前的最终内容确认。哈希用于变化检测，逐字节比较用于最终判等。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuplicateContentCheck {
+    pub anchor: String,
+    pub copy: String,
+    pub expected_hash: u64,
+}
+
 /// 用户确认后的不可变清理计划。执行端不得按名称重新发现或扩大目标。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanupPlan {
@@ -123,6 +131,7 @@ pub struct CleanupPlan {
     pub targets: Vec<PlannedTarget>,
     pub reference_dirs: Vec<String>,
     pub excluded_dirs: Vec<String>,
+    pub duplicate_checks: Vec<DuplicateContentCheck>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -196,3 +196,16 @@ fn scan_root_is_never_a_cache_cleanup_target() {
     assert!(hits.iter().all(|hit| !hit.rel_path.is_empty()));
     assert!(hits.iter().any(|hit| hit.rel_path == "logs"));
 }
+
+#[test]
+fn backup_directory_names_are_not_cleanup_suggestions() {
+    let tmp = tempfile::tempdir().unwrap();
+    for name in ["backup", "backups", "Backup"] {
+        fs::create_dir_all(tmp.path().join(name)).unwrap();
+        fs::write(tmp.path().join(name).join("only-copy.bin"), b"important").unwrap();
+    }
+    let outcome = Scanner::new(ScanConfig::default()).scan(tmp.path(), |_, _| {});
+    let tree = stats::aggregate(&outcome);
+    let hits = rules::find_cache_hits(&tree);
+    assert!(hits.is_empty(), "备份目录不应成为清理候选：{hits:?}");
+}

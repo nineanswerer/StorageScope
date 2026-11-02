@@ -44,10 +44,23 @@ fn normalize_dirs(paths: &[String]) -> Result<Vec<String>, String> {
     Ok(result)
 }
 
+#[cfg(windows)]
+fn comparison_key(path: &str) -> String {
+    // Windows 普通目录不区分大小写。保护判断宁可保守多拦截，也不能漏掉同一目录。
+    path.to_lowercase()
+}
+
+#[cfg(not(windows))]
+fn comparison_key(path: &str) -> String {
+    path.to_string()
+}
+
 fn within(path: &str, dir: &str) -> bool {
+    let path = comparison_key(path);
+    let dir = comparison_key(dir);
     path == dir
         || path
-            .strip_prefix(dir)
+            .strip_prefix(&dir)
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
@@ -314,18 +327,29 @@ pub fn build_cleanup_plan(
         });
     }
 
+    let mut duplicate_checks = Vec::new();
     for group in &analysis.dupe_groups {
-        let survives = group.files.iter().any(|file| {
-            !unique.iter().any(|target| {
+        let is_selected = |file: &String| {
+            unique.iter().any(|target: &PlannedTarget| {
                 target.expectation.is_dir && within(file, &target.expectation.rel_path)
                     || target.expectation.rel_path == *file
             })
-        });
+        };
+        let survives = group.files.iter().any(|file| !is_selected(file));
         if !survives {
             return Err(format!(
                 "重复组 {} 不能删除全部副本，每组至少保留一份",
                 group.hash
             ));
+        }
+        if group.files.iter().any(is_selected) {
+            for copy in group.files.iter().skip(1) {
+                duplicate_checks.push(DuplicateContentCheck {
+                    anchor: group.files[0].clone(),
+                    copy: copy.clone(),
+                    expected_hash: group.hash,
+                });
+            }
         }
     }
     Ok(CleanupPlan {
@@ -333,6 +357,7 @@ pub fn build_cleanup_plan(
         targets: unique,
         reference_dirs,
         excluded_dirs,
+        duplicate_checks,
     })
 }
 
@@ -480,6 +505,36 @@ fn verify_target(
     Ok(absolute)
 }
 
+fn verify_duplicate_content(root: &Path, plan: &CleanupPlan) -> Result<(), String> {
+    for check in &plan.duplicate_checks {
+        let verify = || -> std::io::Result<bool> {
+            let anchor = root.join(check.anchor.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let copy = root.join(check.copy.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let anchor_hash = rules::hash_file_for_merge(&anchor)?;
+            let copy_hash = rules::hash_file_for_merge(&copy)?;
+            Ok(anchor_hash == check.expected_hash
+                && copy_hash == check.expected_hash
+                && rules::files_have_same_content(&anchor, &copy)?)
+        };
+        match verify() {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(format!(
+                    "重复内容最终确认失败：{} 与 {} 已变化或不一致，未执行任何清理",
+                    check.anchor, check.copy
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "重复内容最终确认无法读取：{} 与 {}：{error}，未执行任何清理",
+                    check.anchor, check.copy
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 逐项复核并移入回收站。回收站结果只记为待清空，不伪造实际释放字节。
 pub fn execute_cleanup_plan(
     root: &Path,
@@ -488,6 +543,7 @@ pub fn execute_cleanup_plan(
     let root = root
         .canonicalize()
         .map_err(|error| format!("扫描根目录不可解析：{error}"))?;
+    verify_duplicate_content(&root, plan)?;
     let mut results = Vec::new();
     for target in &plan.targets {
         let expected = &target.expectation;
@@ -585,6 +641,25 @@ mod tests {
         assert!(error.contains("参考目录"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn protection_directories_ignore_windows_case() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("cache/originals")).unwrap();
+        fs::write(tmp.path().join("cache/originals/a.bin"), b"keep").unwrap();
+        let report = analysis(tmp.path());
+
+        let reference =
+            build_cleanup_plan(&report, &["cache".into()], &["Cache/Originals".into()], &[])
+                .unwrap_err();
+        assert!(reference.contains("参考目录"));
+        let excluded =
+            build_cleanup_plan(&report, &["cache".into()], &[], &["Cache/Originals".into()])
+                .unwrap_err();
+        assert!(excluded.contains("排除目录"));
+        assert!(tmp.path().join("cache/originals/a.bin").exists());
+    }
+
     #[test]
     fn changed_directory_is_skipped_without_deleting_new_content() {
         let tmp = tempfile::tempdir().unwrap();
@@ -626,5 +701,60 @@ mod tests {
         let error =
             build_cleanup_plan(&report, &["a.bin".into(), "b.bin".into()], &[], &[]).unwrap_err();
         assert!(error.contains("至少保留一份"));
+    }
+
+    #[test]
+    fn changed_duplicate_anchor_blocks_all_trash_operations() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("a.bin"), b"same").unwrap();
+        fs::write(tmp.path().join("b.bin"), b"same").unwrap();
+        let outcome = Scanner::new(ScanConfig::default()).scan(tmp.path(), |_, _| {});
+        let tree = stats::aggregate(&outcome);
+        let report = rules::analyze(tmp.path(), &outcome, &tree, 50, 1, None);
+        let plan = build_cleanup_plan(&report, &["b.bin".into()], &[], &[]).unwrap();
+        assert_eq!(plan.duplicate_checks.len(), 1);
+
+        fs::write(tmp.path().join("a.bin"), b"DIFF").unwrap();
+        let error = execute_cleanup_plan(tmp.path(), &plan).unwrap_err();
+        assert!(error.contains("最终确认失败"));
+        assert!(tmp.path().join("a.bin").exists());
+        assert!(tmp.path().join("b.bin").exists());
+    }
+
+    #[test]
+    fn missing_duplicate_anchor_blocks_other_trash_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("cache")).unwrap();
+        fs::write(tmp.path().join("cache/old.tmp"), b"old").unwrap();
+        fs::write(tmp.path().join("a.bin"), b"same").unwrap();
+        fs::write(tmp.path().join("b.bin"), b"same").unwrap();
+        let outcome = Scanner::new(ScanConfig::default()).scan(tmp.path(), |_, _| {});
+        let tree = stats::aggregate(&outcome);
+        let report = rules::analyze(tmp.path(), &outcome, &tree, 50, 1, None);
+        let plan =
+            build_cleanup_plan(&report, &["b.bin".into(), "cache".into()], &[], &[]).unwrap();
+
+        fs::remove_file(tmp.path().join("a.bin")).unwrap();
+        let error = execute_cleanup_plan(tmp.path(), &plan).unwrap_err();
+        assert!(error.contains("无法读取"));
+        assert!(tmp.path().join("b.bin").exists());
+        assert!(tmp.path().join("cache/old.tmp").exists());
+    }
+
+    #[test]
+    fn unreadable_duplicate_anchor_blocks_all_trash_operations() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("a.bin"), b"same").unwrap();
+        fs::write(tmp.path().join("b.bin"), b"same").unwrap();
+        let outcome = Scanner::new(ScanConfig::default()).scan(tmp.path(), |_, _| {});
+        let tree = stats::aggregate(&outcome);
+        let report = rules::analyze(tmp.path(), &outcome, &tree, 50, 1, None);
+        let plan = build_cleanup_plan(&report, &["b.bin".into()], &[], &[]).unwrap();
+
+        fs::remove_file(tmp.path().join("a.bin")).unwrap();
+        fs::create_dir(tmp.path().join("a.bin")).unwrap();
+        let error = execute_cleanup_plan(tmp.path(), &plan).unwrap_err();
+        assert!(error.contains("无法读取"));
+        assert!(tmp.path().join("b.bin").exists());
     }
 }
