@@ -7,14 +7,14 @@ type Progress = { done: number; total: number };
 type Props = {
   analysis: AnalysisReport;
   selected: Set<string>;
-  dupeKeep: Record<number, string>;
+  dupeKeep: Record<string, string>;
   merging: boolean;
   quickRunning: boolean;
   trashing: boolean;
   mergeProgress: Progress | null;
   onToggleOne: (path: string) => void;
   onToggleDupeGroup: (group: DupeGroup) => void;
-  onKeepDupe: (hash: number, path: string) => void;
+  onKeepDupe: (hash: string, path: string) => void;
   onReveal: (path: string) => void;
   onCopyPath: (path: string) => void;
   onMerge: () => void;

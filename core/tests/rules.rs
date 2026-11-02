@@ -94,18 +94,31 @@ fn rules_detect_cache_bigfiles_and_dupes() {
     // ── 大文件猎人 ──
     assert_eq!(report.big_files[0].rel_path, "光影包.zip");
     assert_eq!(report.big_files[0].size, 2_000_000);
-    assert!(report.big_files.iter().all(|f| f.size >= rules::BIG_FILE_MIN_SIZE));
-    assert!(!report.big_files.iter().any(|f| f.rel_path.ends_with("latest.log")));
+    assert!(report
+        .big_files
+        .iter()
+        .all(|f| f.size >= rules::BIG_FILE_MIN_SIZE));
+    assert!(!report
+        .big_files
+        .iter()
+        .any(|f| f.rel_path.ends_with("latest.log")));
 
     // ── 重复文件检测 ──
-    assert_eq!(report.dupe_groups.len(), 1, "应恰好一组重复：{:?}", report.dupe_groups);
+    assert_eq!(
+        report.dupe_groups.len(),
+        1,
+        "应恰好一组重复：{:?}",
+        report.dupe_groups
+    );
     let g = &report.dupe_groups[0];
     assert_eq!(g.files.len(), 3);
     assert_eq!(g.size, 150_000);
     assert_eq!(g.wasted, 300_000, "3 份冗余 2 份");
     assert!(g.files.contains(&"游戏A/mods/jei.jar".to_string()));
     assert!(g.files.contains(&"游戏B/mods/jei.jar".to_string()));
-    assert!(g.files.contains(&"游戏A/备份/深层/jei-backup.jar".to_string()));
+    assert!(g
+        .files
+        .contains(&"游戏A/备份/深层/jei-backup.jar".to_string()));
     assert_eq!(report.hash_errors, 0);
 
     // 可回收估算 = 安全级缓存 + 重复冗余
@@ -124,4 +137,53 @@ fn dupes_respect_cancellation_free_empty_dir() {
     assert!(groups.is_empty());
     assert_eq!(hashed, 0);
     assert_eq!(errors, 0);
+}
+
+#[test]
+fn existing_hard_links_are_not_counted_as_reclaimable_duplicates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::write(root.join("a.bin"), b"same-content").unwrap();
+    fs::write(root.join("c.bin"), b"same-content").unwrap();
+    fs::hard_link(root.join("a.bin"), root.join("b.bin")).unwrap();
+    let outcome = Scanner::new(ScanConfig::default()).scan(root, |_, _| {});
+    let (groups, _, errors) = rules::find_duplicates(root, &outcome, 1, None);
+
+    assert_eq!(errors, 0);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].files.len(), 2, "同一硬链接只保留一个路径代表");
+    assert_eq!(groups[0].wasted, 12, "只有另一份独立实体可释放 12 字节");
+    let linked_paths = groups[0]
+        .files
+        .iter()
+        .filter(|path| path.as_str() == "a.bin" || path.as_str() == "b.bin")
+        .count();
+    assert_eq!(linked_paths, 1);
+}
+
+#[test]
+fn dupe_hash_json_preserves_all_u64_bits() {
+    let group = rules::DupeGroup {
+        size: 1,
+        hash: u64::MAX - 1,
+        files: vec!["a.bin".into(), "b.bin".into()],
+        wasted: 1,
+    };
+    let encoded = serde_json::to_string(&group).unwrap();
+    assert!(encoded.contains("\"hash\":\"18446744073709551614\""));
+    let decoded: rules::DupeGroup = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded.hash, u64::MAX - 1);
+}
+
+#[test]
+fn scan_root_is_never_a_cache_cleanup_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("cache");
+    fs::create_dir_all(root.join("logs")).unwrap();
+    fs::write(root.join("logs/latest.log"), b"log").unwrap();
+    let outcome = Scanner::new(ScanConfig::default()).scan(&root, |_, _| {});
+    let tree = stats::aggregate(&outcome);
+    let hits = rules::find_cache_hits(&tree);
+    assert!(hits.iter().all(|hit| !hit.rel_path.is_empty()));
+    assert!(hits.iter().any(|hit| hit.rel_path == "logs"));
 }

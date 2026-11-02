@@ -602,6 +602,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "trash",
+ "windows-sys",
 ]
 
 [[package]]

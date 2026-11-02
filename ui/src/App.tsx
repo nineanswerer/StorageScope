@@ -74,7 +74,7 @@ type RuleHit = {
   safety: "SafeToDelete" | "ReviewAdvised";
 };
 
-type DupeGroup = { size: number; hash: number; files: string[]; wasted: number };
+type DupeGroup = { size: number; hash: string; files: string[]; wasted: number };
 
 type AnalysisReport = {
   cache_hits: RuleHit[];
@@ -218,7 +218,7 @@ export default function App() {
   const [autoMinutes, setAutoMinutes] = useState(0);
   const [viewMode, setViewMode] = useState<"list" | "hier" | "city" | "tree3d">("list");
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [dupeKeep, setDupeKeep] = useState<Record<number, string>>({});
+  const [dupeKeep, setDupeKeep] = useState<Record<string, string>>({});
   const [trashing, setTrashing] = useState(false);
   const [merging, setMerging] = useState(false);
   const [mergeProgress, setMergeProgress] = useState<AnalyzeProgress | null>(null);
@@ -246,7 +246,7 @@ export default function App() {
         root: path,
         groups: analysis.dupe_groups.map((g) => ({ ...g, files: orderedDupeFiles(g, dupeKeep) })),
       });
-      const mergedPaths = new Set(r.results.filter((x) => x.status === "merged").map((x) => x.path));
+      const mergedPaths = new Set(r.results.filter((x) => x.status === "merged" || x.status === "skipped_linked").map((x) => x.path));
       setAnalysis({
         ...analysis,
         dupe_groups: analysis.dupe_groups
@@ -256,15 +256,15 @@ export default function App() {
           })
           .filter((g) => g.files.length > 1),
       });
-      const failDetail = r.results
+      const resultNotes = r.results
         .filter((x) => x.status !== "merged" && x.detail)
         .slice(0, 5)
         .map((x) => `${x.path}：${x.detail}`)
         .join("\n");
       setMessage(
         `空间合并完成：合并 ${r.merged_files} 个副本，实际释放 ${humanSize(r.freed_bytes)}` +
-          `${r.skipped > 0 ? `；${r.skipped} 个内容已变化跳过` : ""}${r.failed > 0 ? `；${r.failed} 个失败` : ""}` +
-          (failDetail ? `\n${failDetail}` : "")
+          `${r.skipped > 0 ? `；${r.skipped} 个已变化或原本已链接，无需处理` : ""}${r.failed > 0 ? `；${r.failed} 个失败` : ""}` +
+          (resultNotes ? `\n${resultNotes}` : "")
       );
     } catch (e) {
       setMessage(String(e));
@@ -303,7 +303,7 @@ export default function App() {
           groups: analysis.dupe_groups.map((g) => ({ ...g, files: orderedDupeFiles(g, dupeKeep) })),
         });
         notes.push(`合并 ${r.merged_files} 个副本，释放 ${humanSize(r.freed_bytes)}`);
-        const mergedPaths = new Set(r.results.filter((x) => x.status === "merged").map((x) => x.path));
+        const mergedPaths = new Set(r.results.filter((x) => x.status === "merged" || x.status === "skipped_linked").map((x) => x.path));
         next = {
           ...next,
           dupe_groups: next.dupe_groups
@@ -313,8 +313,10 @@ export default function App() {
             })
             .filter((g) => g.files.length > 1),
         };
-        if (r.failed > 0 || r.skipped > 0) notes.push(`${r.skipped} 个已变化跳过、${r.failed} 个失败`);
+        if (r.failed > 0 || r.skipped > 0) notes.push(`${r.skipped} 个已变化或原本已链接、${r.failed} 个失败`);
       }
+      // 合并成功、缓存阶段随后失败时，界面也必须立即反映已完成的合并。
+      setAnalysis(next);
       if (safeHits.length > 0) {
         const r = await invoke<TrashReport>("move_to_trash", {
           root: path,
@@ -367,15 +369,15 @@ export default function App() {
     }
   }
 
-  // 自动快照：应用开着期间按间隔保存；正在扫描时跳过本轮
+  // 自动快照与扫描、分析、清理共用目录状态，任何操作进行中都跳过本轮。
   useEffect(() => {
     if (autoMinutes <= 0 || !path || !db) return;
     const t = setInterval(() => {
-      if (!scanning) void doSaveSnapshot();
+      if (!scanning && !analyzing && !trashing && !merging && !quickRunning) void doSaveSnapshot();
     }, autoMinutes * 60_000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoMinutes, path, db, scanning]);
+  }, [autoMinutes, path, db, scanning, analyzing, trashing, merging, quickRunning]);
 
   // 进入快照/差异页面时自动刷新快照列表
   useEffect(() => {
@@ -433,7 +435,7 @@ export default function App() {
     });
   }
 
-  function chooseDupeKeep(hash: number, keep: string) {
+  function chooseDupeKeep(hash: string, keep: string) {
     const group = analysis?.dupe_groups.find((item) => item.hash === hash);
     setDupeKeep((prev) => ({ ...prev, [hash]: keep }));
     setSelected((prev) => {
@@ -503,18 +505,37 @@ export default function App() {
     };
   }, []);
 
+  function resetCleanup() {
+    setAnalysis(null);
+    setAnalyzeProgress(null);
+    setMergeProgress(null);
+    setSelected(new Set());
+    setDupeKeep({});
+  }
+
+  function changePath(next: string) {
+    if (next === path || scanning || analyzing || trashing || merging || quickRunning) return;
+    setPath(next);
+    setTree(null);
+    setOutcome(null);
+    resetCleanup();
+  }
+
   async function pickDir() {
+    if (scanning || analyzing || trashing || merging || quickRunning) return;
     const p = await open({ directory: true });
-    if (typeof p === "string") setPath(p);
+    if (typeof p === "string") changePath(p);
   }
 
   async function doScan() {
-    if (!path) return;
+    if (!path.trim() || scanning || analyzing || trashing || merging || quickRunning) return;
+    resetCleanup();
     setScanning(true);
     setMessage("");
     setProgress(null);
+    const root = path;
     try {
-      const r = await invoke<{ outcome: ScanOutcome; tree: DirStat }>("scan_directory", { path });
+      const r = await invoke<{ outcome: ScanOutcome; tree: DirStat }>("scan_directory", { path: root });
       setOutcome(r.outcome);
       setTree(r.tree);
       setSection("structure"); // 扫描完成直接进入目录结构
@@ -526,7 +547,7 @@ export default function App() {
   }
 
   async function doSaveSnapshot() {
-    if (!path || !db) return;
+    if (!path.trim() || !db.trim() || scanning || analyzing || trashing || merging || quickRunning) return;
     setScanning(true);
     setMessage("");
     setProgress(null);
@@ -567,16 +588,17 @@ export default function App() {
   }
 
   async function doAnalyze() {
-    if (!path) return;
+    if (!path.trim() || scanning || analyzing || trashing || merging || quickRunning) return;
     setAnalyzing(true);
     setMessage("");
     setAnalysis(null);
     setAnalyzeProgress(null);
     setSelected(new Set());
     setDupeKeep({});
+    const root = path;
     try {
       const r = await invoke<AnalysisReport>("analyze_cleanup", {
-        path,
+        path: root,
         top: 50,
         dupeMinMib: dupeMinMib,
         skipDupes,
@@ -710,17 +732,18 @@ export default function App() {
                   <input
                     id="scan-path"
                     value={path}
-                    onChange={(e) => setPath(e.target.value)}
+                    onChange={(e) => changePath(e.target.value)}
                     placeholder="例如 D:\Games 或 C:\Users"
                     autoComplete="off"
                     spellCheck={false}
+                    disabled={scanning || analyzing || trashing || merging || quickRunning}
                   />
-                  <button onClick={pickDir}>选择目录</button>
+                  <button onClick={pickDir} disabled={scanning || analyzing || trashing || merging || quickRunning}>选择目录</button>
                 </div>
                 <div className="scan-form-footer">
                   <span className="field-hint">只读取目录与文件信息，不会修改文件内容。</span>
                   {!scanning ? (
-                    <button className="primary" onClick={doScan} disabled={!path.trim()}>
+                    <button className="primary" onClick={doScan} disabled={!path.trim() || analyzing || trashing || merging || quickRunning}>
                       开始扫描
                     </button>
                   ) : (
@@ -833,7 +856,7 @@ export default function App() {
                     </select>
                   </label>
                   <button onClick={refreshSnapshots}>刷新</button>
-                  <button className="primary" onClick={doSaveSnapshot} disabled={!path.trim() || !db.trim() || scanning}>
+                  <button className="primary" onClick={doSaveSnapshot} disabled={!path.trim() || !db.trim() || scanning || analyzing || trashing || merging || quickRunning}>
                     {scanning ? "正在保存…" : "扫描并保存快照"}
                   </button>
                 </div>
@@ -1178,7 +1201,7 @@ export default function App() {
                     <span>MiB</span>
                   </label>
                   {!analyzing ? (
-                    <button className="primary" onClick={doAnalyze} disabled={!path.trim()}>
+                    <button className="primary" onClick={doAnalyze} disabled={!path.trim() || scanning || trashing || merging || quickRunning}>
                       {analysis ? "重新分析" : "开始分析"}
                     </button>
                   ) : (

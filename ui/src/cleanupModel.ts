@@ -16,7 +16,7 @@ export type BigFile = {
   ext?: string | null;
 };
 
-export type DupeGroup = { size: number; hash: number; files: string[]; wasted: number };
+export type DupeGroup = { size: number; hash: string; files: string[]; wasted: number };
 
 export type AnalysisReport = {
   cache_hits: RuleHit[];
@@ -43,7 +43,7 @@ export type CleanupItem = {
 };
 
 /** 每组只调整展示与执行时的锚点，不改写原始扫描结果。 */
-export function orderedDupeFiles(group: DupeGroup, keepByGroup: Record<number, string>): string[] {
+export function orderedDupeFiles(group: DupeGroup, keepByGroup: Record<string, string>): string[] {
   const keep = keepByGroup[group.hash];
   if (!keep || !group.files.includes(keep) || group.files[0] === keep) return [...group.files];
   return [keep, ...group.files.filter((path) => path !== keep)];
@@ -53,7 +53,7 @@ export function orderedDupeFiles(group: DupeGroup, keepByGroup: Record<number, s
 export function updateDupeKeepSelection(
   selected: Set<string>,
   group: DupeGroup,
-  keepByGroup: Record<number, string>,
+  keepByGroup: Record<string, string>,
   nextKeep: string,
 ): Set<string> {
   const wasFullySelected = orderedDupeFiles(group, keepByGroup).slice(1).every((path) => selected.has(path));
@@ -85,7 +85,7 @@ export function effectiveSelectedPaths(selected: Set<string>, cacheHits: RuleHit
 export function selectedCleanupBytes(
   analysis: AnalysisReport,
   selected: Set<string>,
-  keepByGroup: Record<number, string>,
+  keepByGroup: Record<string, string>,
 ): number {
   const sizes = new Map<string, number>();
   for (const hit of analysis.cache_hits) sizes.set(hit.rel_path, hit.size);

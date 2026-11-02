@@ -12,6 +12,27 @@ use tauri::{AppHandle, Emitter, State};
 /// 当前扫描的取消句柄（同一时间只允许一个扫描）。
 struct ScanCancel(Mutex<Option<Arc<AtomicBool>>>);
 
+/// 所有文件操作共用的边界校验：相对路径解析后必须仍位于已规范化的扫描根目录内。
+fn resolve_within_root(root_path: &Path, rel: &str) -> Result<PathBuf, String> {
+    let canonical = root_path
+        .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
+        .canonicalize()
+        .map_err(|e| format!("{rel}：无法解析（{e}）"))?;
+    if !canonical.starts_with(root_path) {
+        return Err(format!("{rel}：目标不在扫描根目录内，已拒绝"));
+    }
+    Ok(canonical)
+}
+
+/// 回收站目标必须比扫描根更严格：允许定位根目录，但绝不允许删除整个扫描根。
+fn resolve_trash_target(root_path: &Path, rel: &str) -> Result<PathBuf, String> {
+    let canonical = resolve_within_root(root_path, rel)?;
+    if canonical == root_path {
+        return Err("拒绝将扫描根目录移入回收站".into());
+    }
+    Ok(canonical)
+}
+
 #[tauri::command]
 fn cancel_scan(state: State<ScanCancel>) {
     if let Some(c) = state.0.lock().unwrap().as_ref() {
@@ -203,14 +224,7 @@ async fn move_to_trash(root: String, rel_paths: Vec<String>) -> Result<serde_jso
             .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
         let mut abs = Vec::new();
         for rel in &rel_paths {
-            let joined = root_path.join(rel);
-            let canonical = joined
-                .canonicalize()
-                .map_err(|e| format!("{rel}：无法解析（{e}），已中止本次清理"))?;
-            if !canonical.starts_with(&root_path) {
-                return Err(format!("{rel}：目标不在扫描根目录内，已拒绝"));
-            }
-            abs.push(canonical);
+            abs.push(resolve_trash_target(&root_path, rel)?);
         }
         let report = storagescope_core::cleanup::move_to_trash(&abs);
         serde_json::to_value(report).map_err(|e| e.to_string())
@@ -234,19 +248,19 @@ async fn merge_duplicates(
         // 路径逃逸防护：所有组成员必须仍在扫描根目录内
         for g in &groups {
             for rel in &g.files {
-                let c = root_path
-                    .join(rel)
-                    .canonicalize()
-                    .map_err(|e| format!("{rel}：无法解析（{e}），已中止合并"))?;
-                if !c.starts_with(&root_path) {
-                    return Err(format!("{rel}：目标不在扫描根目录内，已拒绝"));
-                }
+                resolve_within_root(&root_path, rel)?;
             }
         }
         let total: usize = groups.iter().map(|g| g.files.len().saturating_sub(1)).sum();
-        let _ = app.emit("merge-progress", serde_json::json!({ "done": 0, "total": total }));
+        let _ = app.emit(
+            "merge-progress",
+            serde_json::json!({ "done": 0, "total": total }),
+        );
         let report = storagescope_core::dedup::merge_duplicates(&root_path, &groups);
-        let _ = app.emit("merge-progress", serde_json::json!({ "done": total, "total": total }));
+        let _ = app.emit(
+            "merge-progress",
+            serde_json::json!({ "done": total, "total": total }),
+        );
         serde_json::to_value(report).map_err(|e| e.to_string())
     })
     .await
@@ -256,10 +270,10 @@ async fn merge_duplicates(
 /// 操作闭环：在资源管理器中定位文件（选中）或打开目录。
 #[tauri::command]
 fn reveal_in_explorer(root: String, rel_path: String) -> Result<(), String> {
-    let abs = Path::new(&root).join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
-    if !abs.exists() {
-        return Err(format!("路径不存在：{}", abs.display()));
-    }
+    let root_path = Path::new(&root)
+        .canonicalize()
+        .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
+    let abs = resolve_within_root(&root_path, &rel_path)?;
     let mut cmd = std::process::Command::new("explorer");
     if abs.is_dir() {
         cmd.arg(abs);
@@ -289,4 +303,29 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("运行 StorageScope 桌面端失败");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_trash_target, resolve_within_root};
+
+    #[test]
+    fn file_operations_reject_parent_directory_escape() {
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        assert!(resolve_within_root(&root, ".").is_ok());
+        let error = resolve_within_root(&root, "..").unwrap_err();
+        assert!(error.contains("目标不在扫描根目录内"));
+    }
+
+    #[test]
+    fn trash_rejects_scan_root_even_with_indirect_paths() {
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let child_name = format!("storagescope-path-test-{}", std::process::id());
+        std::fs::create_dir_all(root.join(&child_name)).unwrap();
+        for rel in ["", ".", &format!("{child_name}/..")] {
+            let error = resolve_trash_target(&root, rel).unwrap_err();
+            assert!(error.contains("拒绝将扫描根目录"));
+        }
+        std::fs::remove_dir(root.join(child_name)).unwrap();
+    }
 }

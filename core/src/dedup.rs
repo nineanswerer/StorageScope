@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize)]
 pub struct MergeItemResult {
     pub path: String,
-    pub status: String, // merged / skipped_changed / failed
+    pub status: String, // merged / skipped_changed / skipped_linked / failed
     pub detail: Option<String>,
 }
 
@@ -31,19 +31,48 @@ fn abs(root: &Path, rel: &str) -> PathBuf {
 }
 
 /// 对单个副本执行 备份→硬链接→清理 合并。返回 (状态, 说明)。
-fn merge_one(root: &Path, anchor: &FileEntry, copy: &FileEntry) -> MergeItemResult {
+fn merge_one(
+    root: &Path,
+    anchor: &FileEntry,
+    copy: &FileEntry,
+    expected_hash: u64,
+) -> MergeItemResult {
     let display = copy.rel_path.clone();
     let anchor_abs = abs(root, &anchor.rel_path);
     let copy_abs = abs(root, &copy.rel_path);
 
-    // 合并前重新校验：大小 + 全文哈希，任何不一致都跳过
+    // 已经是同一实体的路径不再重复合并，也不能虚报可释放空间。
+    match (
+        crate::rules::file_identity(&anchor_abs),
+        crate::rules::file_identity(&copy_abs),
+    ) {
+        (Ok(Some(anchor_id)), Ok(Some(copy_id))) if anchor_id == copy_id => {
+            return MergeItemResult {
+                path: display,
+                status: "skipped_linked".into(),
+                detail: Some("原本就是同一硬链接，无需合并".into()),
+            };
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            return MergeItemResult {
+                path: display,
+                status: "failed".into(),
+                detail: Some(format!("文件实体校验失败：{e}")),
+            };
+        }
+        _ => {}
+    }
+
+    // 合并前重新校验：双方必须保持分析时的大小与全文哈希，任何变化都跳过。
     let verified = (|| -> std::io::Result<bool> {
-        if std::fs::metadata(&anchor_abs)?.len() != std::fs::metadata(&copy_abs)?.len() {
+        let anchor_size = std::fs::metadata(&anchor_abs)?.len();
+        let copy_size = std::fs::metadata(&copy_abs)?.len();
+        if anchor_size != copy_size || anchor_size != anchor.size || copy_size != copy.size {
             return Ok(false);
         }
         let ha = crate::rules::hash_file_for_merge(&anchor_abs)?;
         let hc = crate::rules::hash_file_for_merge(&copy_abs)?;
-        Ok(ha == hc)
+        Ok(ha == hc && ha == expected_hash)
     })();
     match verified {
         Ok(true) => {}
@@ -63,9 +92,25 @@ fn merge_one(root: &Path, anchor: &FileEntry, copy: &FileEntry) -> MergeItemResu
         }
     }
 
-    // 备份 → 硬链接 → 删备份；失败回滚
+    // 先独占创建空备份占位，避免 rename 在 Unix 上覆盖已有同名文件。
     let bak = copy_abs.with_extension("ss-merge-bak");
+    let reservation = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&bak);
+    match reservation {
+        Ok(file) => drop(file),
+        Err(e) => {
+            return MergeItemResult {
+                path: display,
+                status: "failed".into(),
+                detail: Some(format!("无法创建安全备份（同名文件可能已存在）：{e}")),
+            };
+        }
+    }
+    // 备份 → 硬链接 → 删备份；失败回滚
     if let Err(e) = std::fs::rename(&copy_abs, &bak) {
+        let _ = std::fs::remove_file(&bak);
         return MergeItemResult {
             path: display,
             status: "failed".into(),
@@ -78,7 +123,11 @@ fn merge_one(root: &Path, anchor: &FileEntry, copy: &FileEntry) -> MergeItemResu
                 Ok(()) => None,
                 Err(e) => Some(format!("已合并，但备份文件残留（可手动删除）：{e}")),
             };
-            MergeItemResult { path: display, status: "merged".into(), detail }
+            MergeItemResult {
+                path: display,
+                status: "merged".into(),
+                detail,
+            }
         }
         Err(e) => {
             // 回滚：恢复原文件
@@ -88,7 +137,10 @@ fn merge_one(root: &Path, anchor: &FileEntry, copy: &FileEntry) -> MergeItemResu
                 status: "failed".into(),
                 detail: Some(match rollback {
                     Ok(()) => format!("硬链接失败（已回滚）：{e}"),
-                    Err(re) => format!("硬链接失败：{e}；且回滚失败，备份在 {}：{re}", bak.display()),
+                    Err(re) => format!(
+                        "硬链接失败：{e}；且回滚失败，备份在 {}：{re}",
+                        bak.display()
+                    ),
                 }),
             }
         }
@@ -118,7 +170,7 @@ pub fn merge_duplicates(root: &Path, groups: &[DupeGroup]) -> MergeReport {
                 modified: None,
                 ext: None,
             };
-            let r = merge_one(root, &anchor, &copy);
+            let r = merge_one(root, &anchor, &copy, g.hash);
             if r.status == "merged" {
                 freed_bytes += g.size;
             }
@@ -126,20 +178,30 @@ pub fn merge_duplicates(root: &Path, groups: &[DupeGroup]) -> MergeReport {
         }
     }
     let merged_files = results.iter().filter(|r| r.status == "merged").count();
-    let skipped = results.iter().filter(|r| r.status == "skipped_changed").count();
+    let skipped = results
+        .iter()
+        .filter(|r| r.status.starts_with("skipped"))
+        .count();
     let failed = results.iter().filter(|r| r.status == "failed").count();
-    MergeReport { results, merged_files, freed_bytes, skipped, failed }
+    MergeReport {
+        results,
+        merged_files,
+        freed_bytes,
+        skipped,
+        failed,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
 
-    fn group(size: u64, files: &[&str]) -> DupeGroup {
+    fn group(root: &Path, size: u64, files: &[&str]) -> DupeGroup {
         DupeGroup {
             size,
-            hash: 0,
+            hash: crate::rules::hash_file_for_merge(&root.join(files[0])).unwrap(),
             wasted: size * (files.len() as u64 - 1),
             files: files.iter().map(|s| s.to_string()).collect(),
         }
@@ -154,7 +216,7 @@ mod tests {
         fs::write(root.join("sub/b.bin"), b"same-content").unwrap();
         fs::write(root.join("c.bin"), b"different").unwrap();
 
-        let report = merge_duplicates(root, &[group(12, &["a.bin", "sub/b.bin"])]);
+        let report = merge_duplicates(root, &[group(root, 12, &["a.bin", "sub/b.bin"])]);
         assert_eq!(report.merged_files, 1);
         assert_eq!(report.freed_bytes, 12);
 
@@ -178,11 +240,66 @@ mod tests {
         // 组记录仍是相同大小，但 b 已被改写成同大小的不同内容
         fs::write(root.join("b.bin"), b"DIFF-content").unwrap();
 
-        let report = merge_duplicates(root, &[group(12, &["a.bin", "b.bin"])]);
+        let report = merge_duplicates(root, &[group(root, 12, &["a.bin", "b.bin"])]);
         assert_eq!(report.merged_files, 0);
         assert_eq!(report.skipped, 1);
         // b 保持自己的内容，未被合并
         assert_eq!(fs::read(root.join("b.bin")).unwrap(), b"DIFF-content");
         assert_eq!(fs::read(root.join("a.bin")).unwrap(), b"same-content");
+    }
+
+    #[test]
+    fn never_overwrites_an_existing_backup_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.bin"), b"same-content").unwrap();
+        fs::write(root.join("b.bin"), b"same-content").unwrap();
+        fs::write(root.join("b.ss-merge-bak"), b"keep-this-backup").unwrap();
+
+        let report = merge_duplicates(root, &[group(root, 12, &["a.bin", "b.bin"])]);
+        assert_eq!(report.merged_files, 0);
+        assert_eq!(report.freed_bytes, 0);
+        assert_eq!(report.failed, 1);
+        assert_eq!(fs::read(root.join("a.bin")).unwrap(), b"same-content");
+        assert_eq!(fs::read(root.join("b.bin")).unwrap(), b"same-content");
+        assert_eq!(
+            fs::read(root.join("b.ss-merge-bak")).unwrap(),
+            b"keep-this-backup"
+        );
+    }
+
+    #[test]
+    fn skips_paths_that_already_share_one_file_entity() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.bin"), b"same-content").unwrap();
+        fs::hard_link(root.join("a.bin"), root.join("b.bin")).unwrap();
+
+        let report = merge_duplicates(root, &[group(root, 12, &["a.bin", "b.bin"])]);
+        assert_eq!(report.merged_files, 0);
+        assert_eq!(report.freed_bytes, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.results[0].status, "skipped_linked");
+        assert_eq!(fs::read(root.join("a.bin")).unwrap(), b"same-content");
+        assert_eq!(fs::read(root.join("b.bin")).unwrap(), b"same-content");
+    }
+
+    #[test]
+    fn skips_when_both_files_changed_even_if_they_still_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.bin"), b"same-content").unwrap();
+        fs::write(root.join("b.bin"), b"same-content").unwrap();
+        let original = group(root, 12, &["a.bin", "b.bin"]);
+        // 分析后两份一起改成相同的新内容，也不得冒充原分析结果合并。
+        fs::write(root.join("a.bin"), b"NEW-content!").unwrap();
+        fs::write(root.join("b.bin"), b"NEW-content!").unwrap();
+
+        let report = merge_duplicates(root, &[original]);
+        assert_eq!(report.merged_files, 0);
+        assert_eq!(report.skipped, 1);
+        fs::write(root.join("a.bin"), b"updated!").unwrap();
+        assert_eq!(fs::read(root.join("b.bin")).unwrap(), b"NEW-content!");
     }
 }

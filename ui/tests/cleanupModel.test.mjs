@@ -28,7 +28,7 @@ const cache = (rel_path, size) => ({
 });
 
 const big = (rel_path, size) => ({ rel_path, name: rel_path.split("/").at(-1), size, modified: null, ext: "bin" });
-const group = (files, size = 300) => ({ hash: 42, files, size, wasted: size * (files.length - 1) });
+const group = (files, size = 300) => ({ hash: "42", files, size, wasted: size * (files.length - 1) });
 
 test("统一清单合并三类项目，并避免大文件与重复组重复出现", () => {
   const analysis = emptyAnalysis();
@@ -82,4 +82,12 @@ test("已选重复组更换保留副本后仍保持整组选择", () => {
   const restored = updateDupeKeepSelection(next, analysis.dupe_groups[0], { 42: "c.bin" }, "a.bin");
   assert.deepEqual([...restored].sort(), ["b.bin", "c.bin"]);
   assert.equal(selectedCleanupBytes(analysis, restored, {}), 600);
+});
+
+test("64 位重复组哈希作为字符串保留完整精度", () => {
+  const preciseHash = "18446744073709551614";
+  const preciseGroup = { ...group(["a.bin", "b.bin"]), hash: preciseHash };
+  const keep = { [preciseHash]: "b.bin" };
+  assert.equal(preciseGroup.hash, preciseHash);
+  assert.deepEqual(orderedDupeFiles(preciseGroup, keep), ["b.bin", "a.bin"]);
 });

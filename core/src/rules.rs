@@ -30,10 +30,31 @@ pub struct RuleHit {
     pub safety: Safety,
 }
 
+/// u64 在 JSON 中以十进制字符串传输，避免 JavaScript Number 丢失 64 位哈希精度。
+mod u64_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// 重复文件组：内容完全相同的一组文件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DupeGroup {
     pub size: u64,
+    #[serde(with = "u64_string")]
     pub hash: u64,
     /// 相对路径列表（第一份保留，其余为冗余）。
     pub files: Vec<String>,
@@ -127,7 +148,10 @@ const CACHE_RULES: &[CacheRule] = &[
 
 pub fn find_cache_hits(tree: &DirStat) -> Vec<RuleHit> {
     let mut hits = Vec::new();
-    walk_tree(tree, &mut hits);
+    // 扫描根本身永远不是清理目标；即使它叫 cache / logs，也只检查其子目录。
+    for child in &tree.children {
+        walk_tree(child, &mut hits);
+    }
     hits.sort_by(|a, b| b.size.cmp(&a.size));
     hits
 }
@@ -161,7 +185,8 @@ fn walk_tree(node: &DirStat, hits: &mut Vec<RuleHit>) {
 pub const BIG_FILE_MIN_SIZE: u64 = 1024 * 1024;
 
 pub fn find_big_files(outcome: &ScanOutcome, top_n: usize) -> Vec<FileEntry> {
-    let mut files: Vec<FileEntry> = outcome.files
+    let mut files: Vec<FileEntry> = outcome
+        .files
         .iter()
         .filter(|file| file.size >= BIG_FILE_MIN_SIZE)
         .cloned()
@@ -239,6 +264,37 @@ where
         .collect()
 }
 
+/// 文件实体标识：相同卷 / 设备与文件索引意味着多个路径本来就是同一硬链接。
+#[cfg(windows)]
+pub(crate) fn file_identity(path: &Path) -> std::io::Result<Option<(u64, u64)>> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    // 复用 Rust 已打开且自动关闭的句柄，避免额外句柄生命周期与创建参数。
+    let file = std::fs::File::open(path)?;
+    let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let index = ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64;
+    Ok(Some((info.dwVolumeSerialNumber as u64, index)))
+}
+
+#[cfg(unix)]
+pub(crate) fn file_identity(path: &Path) -> std::io::Result<Option<(u64, u64)>> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path)?;
+    Ok(Some((metadata.dev(), metadata.ino())))
+}
+
+#[cfg(not(any(windows, unix)))]
+pub(crate) fn file_identity(_path: &Path) -> std::io::Result<Option<(u64, u64)>> {
+    Ok(None)
+}
+
 pub fn find_duplicates<'a>(
     root: &Path,
     outcome: &ScanOutcome,
@@ -292,16 +348,31 @@ pub fn find_duplicates<'a>(
         match r {
             Ok(h) => {
                 hashed_bytes += f.size;
-                by_hash.entry((f.size, h)).or_default().push(f.rel_path.clone());
+                by_hash
+                    .entry((f.size, h))
+                    .or_default()
+                    .push(f.rel_path.clone());
             }
             Err(_) => hash_errors += 1,
         }
     }
     let mut final_groups: Vec<DupeGroup> = Vec::new();
     for ((size, hash), files) in by_hash {
+        let mut files = files;
+        files.sort();
+        let mut identities: Vec<(u64, u64)> = Vec::new();
+        files.retain(|rel| {
+            let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+            match file_identity(&path) {
+                Ok(Some(identity)) if identities.contains(&identity) => false,
+                Ok(Some(identity)) => {
+                    identities.push(identity);
+                    true
+                }
+                _ => true,
+            }
+        });
         if files.len() >= 2 {
-            let mut files = files;
-            files.sort();
             final_groups.push(DupeGroup {
                 size,
                 hash,
@@ -421,8 +492,14 @@ impl Xxh64 {
         while data.len() >= 32 {
             self.v1 = xx_round(self.v1, u64::from_le_bytes(data[0..8].try_into().unwrap()));
             self.v2 = xx_round(self.v2, u64::from_le_bytes(data[8..16].try_into().unwrap()));
-            self.v3 = xx_round(self.v3, u64::from_le_bytes(data[16..24].try_into().unwrap()));
-            self.v4 = xx_round(self.v4, u64::from_le_bytes(data[24..32].try_into().unwrap()));
+            self.v3 = xx_round(
+                self.v3,
+                u64::from_le_bytes(data[16..24].try_into().unwrap()),
+            );
+            self.v4 = xx_round(
+                self.v4,
+                u64::from_le_bytes(data[24..32].try_into().unwrap()),
+            );
             data = &data[32..];
         }
 
@@ -486,7 +563,8 @@ impl Xxh64 {
 }
 
 fn head_fingerprint(root: &Path, f: &FileEntry) -> std::io::Result<u64> {
-    let mut file = std::fs::File::open(root.join(f.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR)))?;
+    let mut file =
+        std::fs::File::open(root.join(f.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR)))?;
     let mut buf = vec![0u8; HEAD_SAMPLE.min(f.size as usize)];
     file.read_exact(&mut buf)?;
     let mut h = Xxh64::new(0);
