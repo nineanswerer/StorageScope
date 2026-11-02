@@ -8,7 +8,7 @@ import HierarchyViews from "./HierarchyViews";
 import Tree3DView from "./Tree3DView";
 import TrendChart from "./TrendChart";
 import CleanupList from "./CleanupList";
-import { effectiveSelectedPaths, orderedDupeFiles, selectedCleanupBytes } from "./cleanupModel";
+import { effectiveSelectedPaths, orderedDupeFiles, selectedCleanupBytes, updateDupeKeepSelection } from "./cleanupModel";
 import "./App.css";
 
 type DirStat = {
@@ -434,11 +434,15 @@ export default function App() {
   }
 
   function chooseDupeKeep(hash: number, keep: string) {
+    const group = analysis?.dupe_groups.find((item) => item.hash === hash);
     setDupeKeep((prev) => ({ ...prev, [hash]: keep }));
     setSelected((prev) => {
-      const next = new Set(prev);
-      next.delete(keep);
-      return next;
+      if (!group) {
+        const next = new Set(prev);
+        next.delete(keep);
+        return next;
+      }
+      return updateDupeKeepSelection(prev, group, dupeKeep, keep);
     });
   }
 

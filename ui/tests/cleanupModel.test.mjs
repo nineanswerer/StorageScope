@@ -5,6 +5,7 @@ import {
   effectiveSelectedPaths,
   orderedDupeFiles,
   selectedCleanupBytes,
+  updateDupeKeepSelection,
 } from "../src/cleanupModel.ts";
 
 const emptyAnalysis = () => ({
@@ -69,4 +70,16 @@ test("缓存、大文件与重复路径重合时，同一路径只计算一次",
   analysis.big_files = [big("a.bin", 300)];
   analysis.dupe_groups = [group(["a.bin", "b.bin"])];
   assert.equal(selectedCleanupBytes(analysis, new Set(["a.bin", "b.bin"]), {}), 600);
+});
+
+test("已选重复组更换保留副本后仍保持整组选择", () => {
+  const analysis = emptyAnalysis();
+  analysis.dupe_groups = [group(["a.bin", "b.bin", "c.bin"])];
+  const selected = new Set(["b.bin", "c.bin"]);
+  const next = updateDupeKeepSelection(selected, analysis.dupe_groups[0], {}, "c.bin");
+  assert.deepEqual([...next].sort(), ["a.bin", "b.bin"]);
+  assert.equal(selectedCleanupBytes(analysis, next, { 42: "c.bin" }), 600);
+  const restored = updateDupeKeepSelection(next, analysis.dupe_groups[0], { 42: "c.bin" }, "a.bin");
+  assert.deepEqual([...restored].sort(), ["b.bin", "c.bin"]);
+  assert.equal(selectedCleanupBytes(analysis, restored, {}), 600);
 });

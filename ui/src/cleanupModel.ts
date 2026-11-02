@@ -49,6 +49,25 @@ export function orderedDupeFiles(group: DupeGroup, keepByGroup: Record<number, s
   return [keep, ...group.files.filter((path) => path !== keep)];
 }
 
+/** 已选重复组更换保留副本时，把旧保留项转入冗余集合，保持整组选择状态。 */
+export function updateDupeKeepSelection(
+  selected: Set<string>,
+  group: DupeGroup,
+  keepByGroup: Record<number, string>,
+  nextKeep: string,
+): Set<string> {
+  const wasFullySelected = orderedDupeFiles(group, keepByGroup).slice(1).every((path) => selected.has(path));
+  const next = new Set(selected);
+  if (!wasFullySelected) {
+    next.delete(nextKeep);
+    return next;
+  }
+  for (const path of group.files) next.delete(path);
+  const nextKeepByGroup = { ...keepByGroup, [group.hash]: nextKeep };
+  for (const path of orderedDupeFiles(group, nextKeepByGroup).slice(1)) next.add(path);
+  return next;
+}
+
 /** 已选缓存目录包含的文件不重复进入删除队列，也不重复计算体积。 */
 export function effectiveSelectedPaths(selected: Set<string>, cacheHits: RuleHit[]): Set<string> {
   const normalize = (path: string) => path.replace(/\\/g, "/").replace(/\/+$/, "");
