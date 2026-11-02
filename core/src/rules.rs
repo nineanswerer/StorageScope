@@ -155,11 +155,17 @@ fn walk_tree(node: &DirStat, hits: &mut Vec<RuleHit>) {
 }
 
 // ---------------------------------------------------------------------------
-// 大文件猎人：按体积降序取前 N。
+// 大文件猎人：至少 1 MiB，再按体积降序取前 N；小目录也不把普通小文件标成“大文件”。
 // ---------------------------------------------------------------------------
 
+pub const BIG_FILE_MIN_SIZE: u64 = 1024 * 1024;
+
 pub fn find_big_files(outcome: &ScanOutcome, top_n: usize) -> Vec<FileEntry> {
-    let mut files: Vec<FileEntry> = outcome.files.clone();
+    let mut files: Vec<FileEntry> = outcome.files
+        .iter()
+        .filter(|file| file.size >= BIG_FILE_MIN_SIZE)
+        .cloned()
+        .collect();
     files.sort_by(|a, b| b.size.cmp(&a.size));
     files.truncate(top_n);
     files

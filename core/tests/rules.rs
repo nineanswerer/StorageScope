@@ -46,8 +46,8 @@ fn build_case(root: &Path) {
     fs::create_dir_all(&nested).unwrap();
     fs::write(nested.join("t.tmp"), vec![5u8; 1000]).unwrap();
 
-    // 一个明显的大文件
-    fs::write(root.join("光影包.zip"), vec![7u8; 1_000_000]).unwrap();
+    // 一个明显的大文件；同目录的小文件不得进入大文件清单。
+    fs::write(root.join("光影包.zip"), vec![7u8; 2_000_000]).unwrap();
 }
 
 #[test]
@@ -93,7 +93,9 @@ fn rules_detect_cache_bigfiles_and_dupes() {
 
     // ── 大文件猎人 ──
     assert_eq!(report.big_files[0].rel_path, "光影包.zip");
-    assert_eq!(report.big_files[0].size, 1_000_000);
+    assert_eq!(report.big_files[0].size, 2_000_000);
+    assert!(report.big_files.iter().all(|f| f.size >= rules::BIG_FILE_MIN_SIZE));
+    assert!(!report.big_files.iter().any(|f| f.rel_path.ends_with("latest.log")));
 
     // ── 重复文件检测 ──
     assert_eq!(report.dupe_groups.len(), 1, "应恰好一组重复：{:?}", report.dupe_groups);

@@ -7,6 +7,8 @@ import StorageOverview from "./StorageOverview";
 import HierarchyViews from "./HierarchyViews";
 import Tree3DView from "./Tree3DView";
 import TrendChart from "./TrendChart";
+import CleanupList from "./CleanupList";
+import { effectiveSelectedPaths, orderedDupeFiles, selectedCleanupBytes } from "./cleanupModel";
 import "./App.css";
 
 type DirStat = {
@@ -216,6 +218,7 @@ export default function App() {
   const [autoMinutes, setAutoMinutes] = useState(0);
   const [viewMode, setViewMode] = useState<"list" | "hier" | "city" | "tree3d">("list");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [dupeKeep, setDupeKeep] = useState<Record<number, string>>({});
   const [trashing, setTrashing] = useState(false);
   const [merging, setMerging] = useState(false);
   const [mergeProgress, setMergeProgress] = useState<AnalyzeProgress | null>(null);
@@ -241,14 +244,14 @@ export default function App() {
     try {
       const r = await invoke<MergeReport>("merge_duplicates", {
         root: path,
-        groups: analysis.dupe_groups,
+        groups: analysis.dupe_groups.map((g) => ({ ...g, files: orderedDupeFiles(g, dupeKeep) })),
       });
       const mergedPaths = new Set(r.results.filter((x) => x.status === "merged").map((x) => x.path));
       setAnalysis({
         ...analysis,
         dupe_groups: analysis.dupe_groups
           .map((g) => {
-            const files = g.files.filter((p, i) => i === 0 || !mergedPaths.has(p));
+            const files = orderedDupeFiles(g, dupeKeep).filter((p, i) => i === 0 || !mergedPaths.has(p));
             return { ...g, files, wasted: g.size * Math.max(0, files.length - 1) };
           })
           .filter((g) => g.files.length > 1),
@@ -293,11 +296,11 @@ export default function App() {
     const notes: string[] = [];
     let next = analysis;
     try {
-      // 先合并（不删数据），再清缓存
+      // 先合并（不删数据），再清缓存；保留副本选择与手动合并一致。
       if (analysis.dupe_groups.length > 0) {
         const r = await invoke<MergeReport>("merge_duplicates", {
           root: path,
-          groups: analysis.dupe_groups,
+          groups: analysis.dupe_groups.map((g) => ({ ...g, files: orderedDupeFiles(g, dupeKeep) })),
         });
         notes.push(`合并 ${r.merged_files} 个副本，释放 ${humanSize(r.freed_bytes)}`);
         const mergedPaths = new Set(r.results.filter((x) => x.status === "merged").map((x) => x.path));
@@ -305,7 +308,7 @@ export default function App() {
           ...next,
           dupe_groups: next.dupe_groups
             .map((g) => {
-              const files = g.files.filter((p, i) => i === 0 || !mergedPaths.has(p));
+              const files = orderedDupeFiles(g, dupeKeep).filter((p, i) => i === 0 || !mergedPaths.has(p));
               return { ...g, files, wasted: g.size * Math.max(0, files.length - 1) };
             })
             .filter((g) => g.files.length > 1),
@@ -318,10 +321,20 @@ export default function App() {
           relPaths: safeHits.map((h) => h.rel_path),
         });
         notes.push(`${r.succeeded} 个缓存目录进回收站`);
-        const gone = new Set(r.results.filter((x) => x.ok).map((x) => x.path));
-        const isGone = (rel: string) =>
-          [...gone].some((p) => p.replace(/\\/g, "/").endsWith(rel.replace(/\\/g, "/")));
-        next = { ...next, cache_hits: next.cache_hits.filter((h) => !isGone(h.rel_path)) };
+        const gone = r.results.filter((x) => x.ok).map((x) => x.path.replace(/\\/g, "/"));
+        const removedRels = safeHits.map((h) => h.rel_path).filter((rel) => gone.some((p) => p.endsWith(rel)));
+        const isGone = (rel: string) => removedRels.some((dir) => rel === dir || rel.startsWith(`${dir}/`));
+        next = {
+          ...next,
+          cache_hits: next.cache_hits.filter((h) => !isGone(h.rel_path)),
+          big_files: next.big_files.filter((f) => !isGone(f.rel_path)),
+          dupe_groups: next.dupe_groups
+            .map((g) => {
+              const files = g.files.filter((p) => !isGone(p));
+              return { ...g, files, wasted: g.size * Math.max(0, files.length - 1) };
+            })
+            .filter((g) => g.files.length > 1),
+        };
         if (r.failed > 0) notes.push(`${r.failed} 个缓存删除失败`);
       }
       setAnalysis(next);
@@ -408,7 +421,7 @@ export default function App() {
   }
 
   function toggleDupeGroup(g: DupeGroup) {
-    const rest = g.files.slice(1);
+    const rest = orderedDupeFiles(g, dupeKeep).slice(1);
     setSelected((prev) => {
       const next = new Set(prev);
       const allIn = rest.every((p) => next.has(p));
@@ -420,32 +433,41 @@ export default function App() {
     });
   }
 
+  function chooseDupeKeep(hash: number, keep: string) {
+    setDupeKeep((prev) => ({ ...prev, [hash]: keep }));
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.delete(keep);
+      return next;
+    });
+  }
+
   function selectedBytes(): number {
-    if (!analysis) return 0;
-    let sum = 0;
-    for (const h of analysis.cache_hits) if (selected.has(h.rel_path)) sum += h.size;
-    for (const g of analysis.dupe_groups) {
-      for (const p of g.files.slice(1)) if (selected.has(p)) sum += g.size;
-    }
-    return sum;
+    return analysis ? selectedCleanupBytes(analysis, selected, dupeKeep) : 0;
   }
 
   async function doTrash() {
     if (!analysis || selected.size === 0) return;
-    const n = selected.size;
+    const targets = effectiveSelectedPaths(selected, analysis.cache_hits);
+    const n = targets.size;
+    if (n === 0) return;
     if (!window.confirm(`确认把 ${n} 项（约 ${humanSize(selectedBytes())}）移入系统回收站？\n可在回收站中恢复。`)) return;
     setTrashing(true);
     setMessage("");
     try {
-      const r = await invoke<TrashReport>("move_to_trash", { root: path, relPaths: [...selected] });
-      const gone = new Set(r.results.filter((x) => x.ok).map((x) => x.path));
-      const isGone = (rel: string) =>
-        [...gone].some((p) => p.replace(/\\/g, "/").endsWith(rel.replace(/\\/g, "/")));
+      const r = await invoke<TrashReport>("move_to_trash", { root: path, relPaths: [...targets] });
+      const gone = r.results.filter((x) => x.ok).map((x) => x.path.replace(/\\/g, "/"));
+      const removedRels = [...targets].filter((rel) => gone.some((p) => p.endsWith(rel.replace(/\\/g, "/"))));
+      const isGone = (rel: string) => removedRels.some((dir) => rel === dir || rel.startsWith(`${dir}/`));
       setAnalysis({
         ...analysis,
         cache_hits: analysis.cache_hits.filter((h) => !isGone(h.rel_path)),
+        big_files: analysis.big_files.filter((f) => !isGone(f.rel_path)),
         dupe_groups: analysis.dupe_groups
-          .map((g) => ({ ...g, files: g.files.filter((p) => !isGone(p)) }))
+          .map((g) => {
+            const files = g.files.filter((p) => !isGone(p));
+            return { ...g, files, wasted: g.size * Math.max(0, files.length - 1) };
+          })
           .filter((g) => g.files.length > 1),
       });
       setSelected(new Set());
@@ -547,6 +569,7 @@ export default function App() {
     setAnalysis(null);
     setAnalyzeProgress(null);
     setSelected(new Set());
+    setDupeKeep({});
     try {
       const r = await invoke<AnalysisReport>("analyze_cleanup", {
         path,
@@ -616,6 +639,11 @@ export default function App() {
       dupeBytes: analysis?.dupe_groups.reduce((sum, g) => sum + g.wasted, 0) ?? 0,
     };
   }, [analysis]);
+
+  const selectedTargets = useMemo(
+    () => effectiveSelectedPaths(selected, analysis?.cache_hits ?? []),
+    [analysis, selected]
+  );
 
   return (
     <div className="shell">
@@ -1232,166 +1260,32 @@ export default function App() {
                   <div className="selection-bar">
                     <div className="selection-copy">
                       <strong>手动清理</strong>
-                      <span>勾选缓存或重复副本后移入回收站；每组重复文件始终保留第一份。</span>
+                      <span>勾选大文件、缓存或重复副本后移入回收站；每组重复文件保留所选一份。</span>
                     </div>
                     <button
                       className="danger"
                       onClick={doTrash}
-                      disabled={selected.size === 0 || trashing || quickRunning}
+                      disabled={selectedTargets.size === 0 || trashing || quickRunning || merging}
                     >
-                      {trashing ? "正在移入回收站…" : `移入回收站（${selected.size} 项 · ${humanSize(selectedBytes())}）`}
+                      {trashing ? "正在移入回收站…" : `移入回收站（${selectedTargets.size} 项 · ${humanSize(selectedBytes())}）`}
                     </button>
                   </div>
 
-                  <section className="cleanup-section" aria-labelledby="cache-heading">
-                    <div className="section-heading">
-                      <h2 id="cache-heading">缓存与可清理目录</h2>
-                      <span>{analysis.cache_hits.length} 项</span>
-                    </div>
-                    <p className="section-desc">“可安全清理”会进入一键释放；“建议确认”只能由你手动勾选。</p>
-                    {analysis.cache_hits.length > 0 ? (
-                      <div className="table-scroll">
-                        <table className="cleanup-table cache-table">
-                          <thead>
-                            <tr>
-                              <th className="check-cell"><span className="sr-only">选择</span></th>
-                              <th className="size-cell">大小</th>
-                              <th>目录</th>
-                              <th>建议</th>
-                              <th>识别规则</th>
-                              <th>操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {analysis.cache_hits.slice(0, 30).map((h) => (
-                              <tr key={h.rel_path}>
-                                <td className="check-cell">
-                                  <input
-                                    type="checkbox"
-                                    aria-label={`选择 ${h.rel_path}`}
-                                    checked={selected.has(h.rel_path)}
-                                    onChange={() => toggleOne(h.rel_path)}
-                                  />
-                                </td>
-                                <td className="size-cell">{humanSize(h.size)}</td>
-                                <td className="mono" title={h.rel_path}>{h.rel_path}</td>
-                                <td className={h.safety === "SafeToDelete" ? "status-safe" : "status-review"}>
-                                  {h.safety === "SafeToDelete" ? "可安全清理" : "建议确认"}
-                                </td>
-                                <td title={h.reason}>{h.rule_name}</td>
-                                <td className="row-actions">
-                                  <button type="button" className="row-link" onClick={() => reveal(h.rel_path)}>定位</button>
-                                  <button type="button" className="row-link" onClick={() => copyPath(h.rel_path)}>复制路径</button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : (
-                      <div className="section-empty">未命中缓存或可清理目录规则。</div>
-                    )}
-                    {analysis.cache_hits.length > 30 && (
-                      <div className="summary">仅显示前 30 项，共 {analysis.cache_hits.length} 项；一键释放会处理全部安全级项目。</div>
-                    )}
-                  </section>
-
-                  <section className="cleanup-section" aria-labelledby="large-heading">
-                    <div className="section-heading">
-                      <h2 id="large-heading">大文件</h2>
-                      <span>Top {analysis.big_files.length}</span>
-                    </div>
-                    <p className="section-desc">仅用于定位和判断，不参与一键释放，也不能在此直接勾选删除。</p>
-                    {analysis.big_files.length > 0 ? (
-                      <div className="table-scroll">
-                        <table className="cleanup-table large-file-table">
-                          <thead>
-                            <tr>
-                              <th className="size-cell">大小</th>
-                              <th>文件</th>
-                              <th>操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {analysis.big_files.slice(0, 20).map((f) => (
-                              <tr key={f.rel_path}>
-                                <td className="size-cell">{humanSize(f.size)}</td>
-                                <td className="mono" title={f.rel_path}>{f.rel_path}</td>
-                                <td className="row-actions">
-                                  <button type="button" className="row-link" onClick={() => reveal(f.rel_path)}>定位</button>
-                                  <button type="button" className="row-link" onClick={() => copyPath(f.rel_path)}>复制路径</button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : (
-                      <div className="section-empty">当前目录没有可列出的大文件。</div>
-                    )}
-                  </section>
-
-                  {!skipDupes && (
-                    <section className="cleanup-section" aria-labelledby="dupe-heading">
-                      <div className="section-heading">
-                        <h2 id="dupe-heading">重复文件</h2>
-                        <span>{analysis.dupe_groups.length} 组</span>
-                        {analysis.dupe_groups.length > 0 && (
-                          <button className="primary section-action" onClick={doMerge} disabled={merging || quickRunning || trashing}>
-                            {merging
-                              ? mergeProgress
-                                ? `合并校验中 ${mergeProgress.done} / ${mergeProgress.total}…`
-                                : "合并中…"
-                              : `合并全部重复组 · 释放 ${humanSize(cleanupStats.dupeBytes)}`}
-                          </button>
-                        )}
-                      </div>
-                      <p className="section-desc">空间合并保留所有文件路径；手动勾选则删除第一份以外的副本。合并前会重新校验，失败自动回滚。</p>
-                      {analysis.dupe_groups.length > 0 ? (
-                        <div className="table-scroll">
-                          <table className="cleanup-table dupe-table">
-                            <thead>
-                              <tr>
-                                <th className="check-cell"><span className="sr-only">选择</span></th>
-                                <th className="size-cell">单份大小</th>
-                                <th>份数</th>
-                                <th className="size-cell">冗余</th>
-                                <th>文件路径</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {analysis.dupe_groups.slice(0, 20).map((g) => (
-                                <tr key={g.hash}>
-                                  <td className="check-cell">
-                                    <input
-                                      type="checkbox"
-                                      aria-label={`选择重复文件组 ${g.hash}`}
-                                      checked={g.files.length > 1 && g.files.slice(1).every((p) => selected.has(p))}
-                                      onChange={() => toggleDupeGroup(g)}
-                                    />
-                                  </td>
-                                  <td className="size-cell">{humanSize(g.size)}</td>
-                                  <td>×{g.files.length}</td>
-                                  <td className="size-cell">{humanSize(g.wasted)}</td>
-                                  <td className="mono dupe-paths">
-                                    {g.files.slice(0, 4).map((p) => (
-                                      <div key={p} title={p}>{p}</div>
-                                    ))}
-                                    {g.files.length > 4 && <div>… 以及另外 {g.files.length - 4} 份</div>}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : (
-                        <div className="section-empty">未发现内容完全相同的重复文件。</div>
-                      )}
-                      {analysis.dupe_groups.length > 20 && (
-                        <div className="summary">仅显示前 20 组，共 {analysis.dupe_groups.length} 组；空间合并会处理全部组。</div>
-                      )}
-                    </section>
-                  )}
+                  <CleanupList
+                    analysis={analysis}
+                    selected={selected}
+                    dupeKeep={dupeKeep}
+                    merging={merging}
+                    quickRunning={quickRunning}
+                    trashing={trashing}
+                    mergeProgress={mergeProgress}
+                    onToggleOne={toggleOne}
+                    onToggleDupeGroup={toggleDupeGroup}
+                    onKeepDupe={chooseDupeKeep}
+                    onReveal={reveal}
+                    onCopyPath={copyPath}
+                    onMerge={doMerge}
+                  />
                 </div>
               )}
             </section>
