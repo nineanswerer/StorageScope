@@ -10,6 +10,19 @@ use storagescope_core::{diff as ssdiff, export, snapshot, stats, ScanConfig, Sca
 use tauri::{AppHandle, Emitter, Manager, State};
 
 mod diagnostics;
+mod updates;
+
+#[tauri::command]
+async fn check_for_updates() -> Result<updates::UpdateCheckResult, String> {
+    tauri::async_runtime::spawn_blocking(|| updates::check(env!("CARGO_PKG_VERSION")))
+        .await
+        .map_err(|error| format!("更新检查中断：{error}"))?
+}
+
+#[tauri::command]
+fn open_release_page(url: String) -> Result<(), String> {
+    updates::open_release(&url)
+}
 
 fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = match std::env::var_os("STORAGESCOPE_DATA_DIR") {
@@ -69,12 +82,7 @@ struct OperationGuard {
 }
 
 impl OperationGuard {
-    fn with_logging(
-        mut self,
-        app: &AppHandle,
-        operation: &'static str,
-        paths: &[&str],
-    ) -> Self {
+    fn with_logging(mut self, app: &AppHandle, operation: &'static str, paths: &[&str]) -> Self {
         let data_dir = app_data_dir(app).ok();
         let mut redactions = Vec::new();
         if let Some(dir) = &data_dir {
@@ -141,7 +149,10 @@ impl Drop for OperationGuard {
             }
         }
         let mut active = self.state.active.lock().unwrap();
-        if active.as_ref().is_some_and(|operation| operation.id == self.id) {
+        if active
+            .as_ref()
+            .is_some_and(|operation| operation.id == self.id)
+        {
             *active = None;
         }
     }
@@ -171,7 +182,10 @@ fn begin_operation(state: &Arc<OperationState>) -> Result<OperationGuard, String
 fn emit_recovery(app: &AppHandle, root: &Path) {
     let messages = storagescope_core::dedup::recover_interrupted_merges(root);
     if !messages.is_empty() {
-        let _ = app.emit("merge-recovery", serde_json::json!({ "messages": messages }));
+        let _ = app.emit(
+            "merge-recovery",
+            serde_json::json!({ "messages": messages }),
+        );
     }
 }
 
@@ -448,8 +462,7 @@ async fn execute_cleanup_plan(
     reference_dirs: Vec<String>,
     excluded_dirs: Vec<String>,
 ) -> Result<serde_json::Value, String> {
-    let mut _operation =
-        begin_operation(state.inner())?.with_logging(&app, "cleanup", &[&root]);
+    let mut _operation = begin_operation(state.inner())?.with_logging(&app, "cleanup", &[&root]);
     let result = tauri::async_runtime::spawn_blocking(move || {
         let root = Path::new(&root)
             .canonicalize()
@@ -545,6 +558,8 @@ pub fn run() {
             export_tree,
             export_diff,
             export_diagnostics,
+            check_for_updates,
+            open_release_page,
         ])
         .run(tauri::generate_context!())
         .expect("运行 StorageScope 桌面端失败");

@@ -360,6 +360,14 @@ input:disabled { cursor: not-allowed; opacity: 0.48; }
 
 /* ---- 快照趋势与差异比较 ---- */
 
+.update-panel { display: flex; align-items: center; justify-content: space-between; gap: 14px 20px; flex-wrap: wrap; padding: 13px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.update-copy { display: flex; flex-direction: column; gap: 3px; min-width: 180px; }
+.update-copy strong { color: var(--muted); font-size: 13px; font-weight: 500; }
+.update-copy span { color: var(--faint); font-size: 11px; }
+.update-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.update-available { color: var(--accent); font-size: 12px; font-weight: 600; }
+.update-error { flex-basis: 100%; margin: 0; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+
 .db-field { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .db-field input { width: 260px; min-width: 180px; }
 .snapshot-breakdown { margin-top: 4px; }

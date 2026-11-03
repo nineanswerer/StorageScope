@@ -20,7 +20,11 @@ fn now_ms() -> u128 {
 
 fn sanitize(detail: &str, redactions: &[String]) -> String {
     let mut result = detail.to_string();
-    for (index, path) in redactions.iter().filter(|path| !path.is_empty()).enumerate() {
+    for (index, path) in redactions
+        .iter()
+        .filter(|path| !path.is_empty())
+        .enumerate()
+    {
         result = result.replace(path, &format!("$PATH_{}", index + 1));
     }
     result
@@ -36,7 +40,10 @@ pub fn append(
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir)?;
     let path = data_dir.join(LOG_FILE);
-    if path.metadata().is_ok_and(|metadata| metadata.len() >= MAX_LOG_BYTES) {
+    if path
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() >= MAX_LOG_BYTES)
+    {
         let previous = data_dir.join(PREVIOUS_LOG_FILE);
         if previous.exists() {
             std::fs::remove_file(&previous)?;
@@ -51,7 +58,10 @@ pub fn append(
         "phase": phase,
         "detail": detail.map(|text| sanitize(text, redactions)),
     });
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     serde_json::to_writer(&mut file, &event)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     file.write_all(b"\n")?;

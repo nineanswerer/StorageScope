@@ -8,6 +8,7 @@ import HierarchyViews from "./HierarchyViews";
 import Tree3DView from "./Tree3DView";
 import TrendChart from "./TrendChart";
 import CleanupList from "./CleanupList";
+import UpdatePanel from "./UpdatePanel";
 import {
   effectiveSelectedPaths,
   normalizeCleanupPath,
@@ -892,6 +893,8 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
+              <UpdatePanel />
 
               {scanning && (
                 <div className="progress cleanup-progress" role="status">
