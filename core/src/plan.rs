@@ -541,31 +541,51 @@ fn verify_target(
     Ok(absolute)
 }
 
+fn verify_duplicate_check(root: &Path, check: &DuplicateContentCheck) -> Result<(), String> {
+    let verify = || -> std::io::Result<bool> {
+        let anchor = root.join(check.anchor.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let copy = root.join(check.copy.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let anchor_hash = rules::hash_file_for_merge(&anchor)?;
+        let copy_hash = rules::hash_file_for_merge(&copy)?;
+        Ok(anchor_hash == check.expected_hash
+            && copy_hash == check.expected_hash
+            && rules::files_have_same_content(&anchor, &copy)?)
+    };
+    match verify() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "重复内容最终确认失败：{} 与 {} 已变化或不一致，未执行任何清理",
+            check.anchor, check.copy
+        )),
+        Err(error) => Err(format!(
+            "重复内容最终确认无法读取：{} 与 {}：{error}，未执行任何清理",
+            check.anchor, check.copy
+        )),
+    }
+}
+
 fn verify_duplicate_content(root: &Path, plan: &CleanupPlan) -> Result<(), String> {
     for check in &plan.duplicate_checks {
-        let verify = || -> std::io::Result<bool> {
-            let anchor = root.join(check.anchor.replace('/', std::path::MAIN_SEPARATOR_STR));
-            let copy = root.join(check.copy.replace('/', std::path::MAIN_SEPARATOR_STR));
-            let anchor_hash = rules::hash_file_for_merge(&anchor)?;
-            let copy_hash = rules::hash_file_for_merge(&copy)?;
-            Ok(anchor_hash == check.expected_hash
-                && copy_hash == check.expected_hash
-                && rules::files_have_same_content(&anchor, &copy)?)
+        verify_duplicate_check(root, check)?;
+    }
+    Ok(())
+}
+
+/// 每次写操作前只复核当前目标涉及的重复组；已完成目标不应阻断后续独立项目。
+fn verify_duplicate_content_for_target(
+    root: &Path,
+    plan: &CleanupPlan,
+    target: &PlannedTarget,
+) -> Result<(), String> {
+    let expected = &target.expectation;
+    for check in &plan.duplicate_checks {
+        let involves_target = if expected.is_dir {
+            within(&check.anchor, &expected.rel_path) || within(&check.copy, &expected.rel_path)
+        } else {
+            check.anchor == expected.rel_path || check.copy == expected.rel_path
         };
-        match verify() {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(format!(
-                    "重复内容最终确认失败：{} 与 {} 已变化或不一致，未执行任何清理",
-                    check.anchor, check.copy
-                ));
-            }
-            Err(error) => {
-                return Err(format!(
-                    "重复内容最终确认无法读取：{} 与 {}：{error}，未执行任何清理",
-                    check.anchor, check.copy
-                ));
-            }
+        if involves_target {
+            verify_duplicate_check(root, check)?;
         }
     }
     Ok(())
@@ -594,7 +614,7 @@ fn execute_cleanup_plan_guarded(
         let verified = verify_target(&root, target, plan).and_then(|absolute| {
             before_trash(&absolute);
             // 写操作前再次核对，稳定拦截复核后新增、替换和重解析点注入。
-            verify_duplicate_content(&root, plan).map_err(changed)?;
+            verify_duplicate_content_for_target(&root, plan, target).map_err(changed)?;
             verify_target(&root, target, plan)
         });
         match verified {
@@ -727,6 +747,28 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_file_survives_desktop_json_roundtrip_without_timestamp_precision_loss() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("big.bin"), vec![b'a'; 1024 * 1024]).unwrap();
+        let report = analysis(tmp.path());
+        let baseline = report
+            .cleanup_targets
+            .iter()
+            .find(|target| target.rel_path == "big.bin")
+            .unwrap();
+        assert!(baseline.modified.unwrap() > 9_007_199_254_740_991);
+
+        // Tauri 将分析结果交给 React，再把同一份计划传回 Rust 执行。
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"modified\":\""));
+        let returned: AnalysisReport = serde_json::from_str(&json).unwrap();
+        let plan = build_cleanup_plan(&returned, &["big.bin".into()], &[], &[]).unwrap();
+        let execution = execute_cleanup_plan(tmp.path(), &plan).unwrap();
+        assert_eq!(execution.succeeded, 1, "结果：{:?}", execution.results);
+        assert!(!tmp.path().join("big.bin").exists());
+    }
+
+    #[test]
     fn trash_success_is_pending_not_verified_free_space() {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir_all(tmp.path().join("cache")).unwrap();
@@ -738,6 +780,31 @@ mod tests {
         assert_eq!(execution.pending_recycle_bin_bytes, 5);
         assert_eq!(execution.verified_freed_bytes, None);
         assert!(!tmp.path().join("cache").exists());
+    }
+
+    #[test]
+    fn selected_duplicate_recycling_does_not_block_later_independent_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("a-anchor.bin"), b"same").unwrap();
+        fs::write(tmp.path().join("b-copy.bin"), b"same").unwrap();
+        fs::write(tmp.path().join("z-big.bin"), vec![b'z'; 1024 * 1024]).unwrap();
+        let outcome = Scanner::new(ScanConfig::default()).scan(tmp.path(), |_, _| {});
+        let tree = stats::aggregate(&outcome);
+        let report = rules::analyze(tmp.path(), &outcome, &tree, 50, 1, None);
+        let plan = build_cleanup_plan(
+            &report,
+            &["b-copy.bin".into(), "z-big.bin".into()],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let execution = execute_cleanup_plan(tmp.path(), &plan).unwrap();
+        assert_eq!(execution.succeeded, 2, "结果：{:?}", execution.results);
+        assert_eq!(execution.failed, 0);
+        assert_eq!(execution.skipped, 0);
+        assert!(tmp.path().join("a-anchor.bin").exists());
+        assert!(!tmp.path().join("b-copy.bin").exists());
+        assert!(!tmp.path().join("z-big.bin").exists());
     }
 
     #[test]

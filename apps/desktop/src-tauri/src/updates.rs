@@ -145,6 +145,20 @@ fn select_update(body: &str, current: &str) -> Result<UpdateCheckResult, String>
     })
 }
 
+fn request_error(context: &str, error: reqwest::Error) -> String {
+    let mut detail = error.to_string();
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !detail.contains(&text) {
+            detail.push_str(" → ");
+            detail.push_str(&text);
+        }
+        source = cause.source();
+    }
+    format!("{context}：{detail}")
+}
+
 pub fn check(current: &str) -> Result<UpdateCheckResult, String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!("StorageScope/{current}"))
@@ -152,18 +166,18 @@ pub fn check(current: &str) -> Result<UpdateCheckResult, String> {
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
         .build()
-        .map_err(|error| format!("无法初始化更新检查：{error}"))?;
+        .map_err(|error| request_error("无法初始化更新检查", error))?;
     let response = client
         .get(RELEASES_API)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
-        .map_err(|error| format!("无法连接更新服务，请检查网络后重试：{error}"))?
+        .map_err(|error| request_error("无法连接更新服务，请检查网络后重试", error))?
         .error_for_status()
-        .map_err(|error| format!("更新服务暂时不可用：{error}"))?;
+        .map_err(|error| request_error("更新服务暂时不可用", error))?;
     let body = response
         .text()
-        .map_err(|error| format!("无法读取更新服务响应：{error}"))?;
+        .map_err(|error| request_error("无法读取更新服务响应", error))?;
     select_update(&body, current)
 }
 

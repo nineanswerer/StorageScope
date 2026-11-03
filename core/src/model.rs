@@ -1,5 +1,45 @@
 use serde::{Deserialize, Serialize};
 
+/// i64 纳秒时间戳在 JSON 中使用字符串，避免 JavaScript Number 丢失精度。
+/// 读取时兼容旧版数字格式；数据库中的 INTEGER 列不经过此模块。
+mod optional_i64_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Representation {
+        String(String),
+        Signed(i64),
+        Unsigned(u64),
+    }
+
+    pub fn serialize<S>(value: &Option<i64>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.serialize_str(&value.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<Representation>::deserialize(deserializer)?;
+        value
+            .map(|value| match value {
+                Representation::String(value) => value.parse().map_err(serde::de::Error::custom),
+                Representation::Signed(value) => Ok(value),
+                Representation::Unsigned(value) => {
+                    value.try_into().map_err(serde::de::Error::custom)
+                }
+            })
+            .transpose()
+    }
+}
+
 /// 保留文件系统可提供的最高修改时间精度，避免同秒同尺寸修改漏检。
 pub fn modified_timestamp(metadata: &std::fs::Metadata) -> Option<i64> {
     metadata
@@ -22,6 +62,7 @@ pub struct FileEntry {
     pub size: u64,
     /// 修改时间，Unix 纳秒；读取失败为 None。
     /// 纳秒精度用于识别同一秒内的同尺寸修改，实际精度取决于文件系统。
+    #[serde(with = "optional_i64_string")]
     pub modified: Option<i64>,
     /// 小写扩展名（不含点）。
     pub ext: Option<String>,
@@ -110,6 +151,7 @@ pub struct TargetExpectation {
     pub is_dir: bool,
     pub logical_size: u64,
     pub file_count: u64,
+    #[serde(with = "optional_i64_string")]
     pub modified: Option<i64>,
     /// 目录后代清单的确定性指纹；单文件使用大小、时间与实体身份。
     pub manifest_hash: Option<String>,

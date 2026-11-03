@@ -33,11 +33,16 @@ function humanSize(bytes: number): string {
   return index === 0 ? `${value} ${units[index]}` : `${value.toFixed(1)} ${units[index]}`;
 }
 
-function formatModified(seconds: number | null | undefined): string {
-  if (seconds == null) return "修改时间未知";
-  const date = new Date(seconds * 1000);
-  if (Number.isNaN(date.valueOf())) return "修改时间未知";
-  return `修改于 ${new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }).format(date)}`;
+function formatModified(nanoseconds: string | null | undefined): string {
+  if (nanoseconds == null) return "修改时间未知";
+  try {
+    const milliseconds = Number(BigInt(nanoseconds) / 1_000_000n);
+    const date = new Date(milliseconds);
+    if (Number.isNaN(date.valueOf())) return "修改时间未知";
+    return `修改于 ${new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }).format(date)}`;
+  } catch {
+    return "修改时间未知";
+  }
 }
 
 const FILTERS: { id: "all" | CleanupKind; label: string }[] = [

@@ -12,7 +12,7 @@ export type BigFile = {
   rel_path: string;
   name: string;
   size: number;
-  modified?: number | null;
+  modified?: string | null;
   ext?: string | null;
 };
 
@@ -23,7 +23,7 @@ export type TargetExpectation = {
   is_dir: boolean;
   logical_size: number;
   file_count: number;
-  modified: number | null;
+  modified: string | null;
   manifest_hash: string | null;
   file_id: string | null;
   complete: boolean;
