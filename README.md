@@ -34,9 +34,9 @@ StorageScope 提供判断依据，由用户确认处理范围。当前安全策�
 
 ## 下载与版本状态
 
-[下载 v0.2.0](https://github.com/nineanswerer/StorageScope/releases/tag/v0.2.0)。
+当前外部测试版本为 [v0.3.0-beta.2](https://github.com/nineanswerer/StorageScope/releases/tag/v0.3.0-beta.2)，提供 NSIS 安装包与免安装 ZIP。它是 pre-release，发布说明记录对应资产大小和 SHA-256。
 
-v0.2.0 包含逐字节内容确认、完整选组合并、Windows 大小写保护和硬链接释放计量整改。发布标签记录对应源码，安装包校验值见[安全验收记录](docs/15-release-safety-audit.md)。
+Beta 增加故障恢复、本地诊断、手动更新检查、真实安装生命周期验收和外部测试材料。安装或使用前先阅读[用户指南](docs/USER_GUIDE.md)与[安全边界](docs/SAFETY_AND_RECOVERY.md)，参与测试请使用[Beta 测试指南](docs/BETA_TESTING.md)。当前资产未配置 Authenticode 签名。
 
 ## 技术栈与结构
 
@@ -106,18 +106,18 @@ npm run test:model
 npm run build
 ```
 
-当前自动化覆盖 **55 项 Rust 核心测试、4 项桌面测试和 19 项前端模型测试**。GitHub Actions 会在推送到 `main`、提交 Pull Request 或手动触发时运行这些检查。安装包发布作为独立流程进行。
+当前自动化覆盖 **57 项 Rust 核心测试、8 项桌面测试和 20 项前端模型测试**。GitHub Actions 会在推送到 `main`、提交 Pull Request 或手动触发时运行这些检查。安装包发布作为独立流程进行。
 
 ## 验证记录与限制
 
-- 10 万文件合成目录完成三轮性能测量，记录扫描、取消、内存和快照比较数据，详见[诊断与性能验收](docs/16-beta-diagnostics-performance.md)。
+- 10 万文件合成目录完成三轮 CLI 性能测量；安装窗口另完成百万文件取消、10 万文件 3D 帧测量和原生诊断导出，详见[诊断与性能验收](docs/16-beta-diagnostics-performance.md)。
 - 在一个包含 **307,630 个文件、78.9 GB** 的真实目录上完成过扫描与结构展示验证。一次自动化流程约 24 秒，包含固定等待，该时间仅作为单次运行记录。
-- v0.2.0 的调试窗口和 release 窗口分别通过同一套隔离样本验收，覆盖 Windows 大小写保护、变化目录跳过、回收站、结果快照比较、完整选组合并与候选重算。
+- 隔离桌面验收覆盖 Windows 大小写保护、变化目录跳过、回收站、结果快照比较、完整选组合并与候选重算。
 - 硬链接样本确认：旧实体仍有其他链接时释放记为 0 B；最后链接移除时，3.0 MiB 样本核实释放 3.0 MiB。未勾选组始终保持独立实体。
-- 正式窗口与安装包启动均无附加命令行窗口。安装包只验证启动，未执行安装后的完整流程。
-- 尚未覆盖多设备或第三方环境复现、所有特殊文件系统、回收站清空后的卷余量测量及普遍性能结论。当前安装包未配置代码签名。
+- NSIS 已实际执行安装后完整流程、beta.1 → beta.2 覆盖升级、卸载和重装；免安装版已验证解压运行、移动目录、beta.2 替换升级与数据保留。程序启动均无附加命令行窗口，详见[beta.2 本机验收](docs/17-beta2-local-acceptance.md)。
+- 尚未覆盖多设备或第三方环境复现、UAC 提权场景、所有特殊文件系统、回收站清空后的卷余量测量及普遍性能结论。当前安装包未配置代码签名。
 
-更多设计与验证细节见 [DESIGN.md](DESIGN.md) 和[项目复盘](https://nineanswerer.github.io/writing/storagescope-case-study/)。
+更多设计与验证细节见 [DESIGN.md](DESIGN.md)、[故障排查](docs/TROUBLESHOOTING.md)和[发布检查清单](docs/RELEASE_CHECKLIST.md)。
 
 ## 参与与贡献分工
 

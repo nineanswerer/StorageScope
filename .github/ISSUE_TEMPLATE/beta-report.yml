@@ -1,0 +1,54 @@
+name: Beta test report
+description: 记录 Beta 测试指南中的实际结果
+title: "[Beta] "
+labels: [beta-test]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 版本与资产 SHA-256
+    validations:
+      required: true
+  - type: input
+    id: case
+    attributes:
+      label: 测试编号
+      placeholder: B01—B12，可多项
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: 实际结果
+      options:
+        - 通过
+        - 失败
+        - 阻塞
+        - 部分完成
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Windows、文件系统与安装方式
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 实际步骤与结果证据
+      description: 记录观察到的界面、文件状态或错误文本，不填写未执行项目。
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断附件或脱敏片段
+      description: 分享前检查完整 JSON，移除不需要公开的内容。
+  - type: checkboxes
+    id: synthetic
+    attributes:
+      label: 测试范围
+      options:
+        - label: 首次文件操作测试使用合成目录或有独立备份的非关键数据。
+          required: true

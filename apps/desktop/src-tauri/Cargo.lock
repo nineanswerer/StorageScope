@@ -3298,7 +3298,7 @@ dependencies = [
 
 [[package]]
 name = "storagescope-desktop"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "reqwest 0.12.28",
  "serde",

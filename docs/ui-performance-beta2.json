@@ -1,0 +1,39 @@
+{
+  "schema": "storagescope-ui-performance-v1",
+  "app_version": "0.3.0-beta.2",
+  "recorded_on": "2026-11-03",
+  "environment": {
+    "os": "Windows 10 Pro 10.0.19045",
+    "cpu": "AMD Ryzen 7 7735H with Radeon Graphics",
+    "memory_bytes": 16312721408,
+    "scope": "One installed desktop window on the maintenance machine; not a multi-device result."
+  },
+  "cancellation": {
+    "sample": "1,000 directories x 1,000 empty files",
+    "file_count": 1000000,
+    "start_to_cancel_ms": 2.9000000059604645,
+    "cancel_to_result_ms": 48.3999999910593,
+    "cancelled": true,
+    "visible_result": "扫描已取消，结果不完整"
+  },
+  "renderer": {
+    "sample_files": 100000,
+    "view": "3D tree after a complete scan; no camera interaction during sampling",
+    "frames": 120,
+    "mean_frame_ms": 6.060000000000006,
+    "median_frame_ms": 6.099999999999454,
+    "p95_frame_ms": 6.199999999999818,
+    "max_frame_ms": 6.200000000000728,
+    "mean_fps": 165.01650165016486,
+    "long_task_count": 0,
+    "long_task_total_ms": 0,
+    "canvas_count": 1
+  },
+  "diagnostics": {
+    "native_save_dialog": "passed",
+    "events": 94,
+    "operations": ["analyze", "cleanup", "scan", "snapshot_diff", "snapshot_save"],
+    "phases_observed": ["cancelled", "started", "succeeded"],
+    "paths_redacted": true
+  }
+}

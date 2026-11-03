@@ -1,0 +1,56 @@
+name: Bug report
+description: 报告可公开复现的 StorageScope 缺陷
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: StorageScope 版本
+      placeholder: 0.3.0-beta.2
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 版本与构建号
+      placeholder: Windows 10 Pro 22H2，10.0.19045
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 使用合成目录或有备份的非关键数据描述最小复现。
+      placeholder: 1. 创建样本目录\n2. 扫描并执行……\n3. 观察结果
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果与错误文本
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 样本与安装环境
+      description: 文件数、文件系统、NSIS／免安装、相关安全软件。
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息
+      description: 粘贴必要的已脱敏片段；大型 JSON 可作为附件。分享前检查全文。
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 数据安全检查
+      options:
+        - label: 我没有提交真实个人文件内容、凭据或未经检查的诊断文件。
+          required: true

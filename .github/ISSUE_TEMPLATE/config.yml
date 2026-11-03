@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全反馈
+    url: https://github.com/nineanswerer/StorageScope/security
+    about: 涉及数据安全、保护边界或隐私泄露时优先查看安全反馈说明。
