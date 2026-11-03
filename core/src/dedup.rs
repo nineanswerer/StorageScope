@@ -29,6 +29,8 @@ pub struct MergeReport {
     pub verified_freed_bytes: Option<u64>,
     pub skipped: usize,
     pub failed: usize,
+    /// 启动时处理的中断恢复记录；需要人工检查的记录也在这里报告。
+    pub recovery: Vec<String>,
 }
 
 fn abs(root: &Path, rel: &str) -> PathBuf {
@@ -82,7 +84,7 @@ fn item(path: String, status: &str, detail: Option<String>) -> MergeItemResult {
 
 /// 不替换地恢复备份：目标已存在时同时保留新文件和备份，绝不覆盖并发新内容。
 fn restore_backup_no_replace(bak: &Path, copy: &Path) -> std::io::Result<()> {
-    if copy.exists() {
+    if copy.try_exists()? {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
             "原路径已出现新文件，备份已保留",
@@ -90,6 +92,130 @@ fn restore_backup_no_replace(bak: &Path, copy: &Path) -> std::io::Result<()> {
     }
     std::fs::hard_link(bak, copy)?;
     std::fs::remove_file(bak)
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct MergeJournal {
+    anchor: String,
+    copy: String,
+    backup: String,
+    expected_hash: u64,
+}
+
+fn journal_path(root: &Path, copy: &str) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    copy.hash(&mut hash);
+    root.join(format!(".storagescope-merge-{:016x}.json", hash.finish()))
+}
+
+fn write_journal(
+    root: &Path,
+    anchor: &str,
+    copy: &str,
+    backup: &Path,
+    expected_hash: u64,
+) -> std::io::Result<PathBuf> {
+    let backup_rel = backup
+        .strip_prefix(root)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "备份越出扫描根"))?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let journal = MergeJournal {
+        anchor: anchor.into(),
+        copy: copy.into(),
+        backup: backup_rel,
+        expected_hash,
+    };
+    let path = journal_path(root, copy);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    serde_json::to_writer(&mut file, &journal)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    file.sync_all()?;
+    Ok(path)
+}
+
+/// 恢复上次中断留下的合并状态。无法判定时同时保留原路径、备份和恢复记录。
+pub fn recover_interrupted_merges(root: &Path) -> Vec<String> {
+    let mut messages = Vec::new();
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) => return vec![format!("无法检查合并恢复记录：{error}")],
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(".storagescope-merge-") || !name.ends_with(".json") {
+            continue;
+        }
+        let journal = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<MergeJournal>(&bytes).ok());
+        let Some(journal) = journal else {
+            messages.push(format!("恢复记录损坏，已保留：{}", path.display()));
+            continue;
+        };
+        if [
+            journal.anchor.as_str(),
+            journal.copy.as_str(),
+            journal.backup.as_str(),
+        ]
+        .into_iter()
+        .any(|rel| crate::plan::normalize_relative(rel).is_err())
+            || journal.anchor == journal.copy
+            || journal.copy == journal.backup
+        {
+            messages.push(format!("恢复记录包含危险路径，已保留：{}", path.display()));
+            continue;
+        }
+        let anchor = abs(root, &journal.anchor);
+        let copy = abs(root, &journal.copy);
+        let backup = abs(root, &journal.backup);
+        match (copy.try_exists(), backup.try_exists()) {
+            (Ok(false), Ok(true)) => {
+                let verified = crate::rules::hash_file_for_merge(&backup)
+                    .map(|hash| hash == journal.expected_hash)
+                    .unwrap_or(false)
+                    && crate::rules::files_have_same_content(&anchor, &backup).unwrap_or(false);
+                if !verified {
+                    messages.push(format!("备份内容无法确认，已保留：{}", backup.display()));
+                    continue;
+                }
+                match restore_backup_no_replace(&backup, &copy) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_file(&path);
+                        messages.push(format!("已从中断合并恢复原路径：{}", journal.copy));
+                    }
+                    Err(error) => messages.push(format!(
+                        "原路径恢复失败，备份仍保留：{}：{error}",
+                        backup.display()
+                    )),
+                }
+            }
+            (Ok(true), Ok(true)) => messages.push(format!(
+                "原路径与合并备份同时存在，两者均已保留：{} / {}",
+                journal.copy, journal.backup
+            )),
+            (Ok(true), Ok(false)) => match std::fs::remove_file(&path) {
+                Ok(()) => messages.push(format!("合并目标存在，已清理恢复记录：{}", journal.copy)),
+                Err(error) => {
+                    messages.push(format!("无法清理恢复记录 {}：{error}", path.display()))
+                }
+            },
+            (Ok(false), Ok(false)) => messages.push(format!(
+                "原路径与备份均缺失，需要人工检查：{} / {}",
+                journal.copy, journal.backup
+            )),
+            (Err(error), _) | (_, Err(error)) => messages.push(format!(
+                "无法确认中断合并的文件状态，恢复记录已保留：{}：{error}",
+                path.display()
+            )),
+        }
+    }
+    messages
 }
 
 /// 对单个副本执行 备份→硬链接→清理 合并。
@@ -173,14 +299,26 @@ fn merge_one_guarded(
             );
         }
     }
+    let journal = match write_journal(root, &anchor.rel_path, &display, &bak, expected_hash) {
+        Ok(path) => path,
+        Err(e) => {
+            let _ = std::fs::remove_file(&bak);
+            return item(
+                display,
+                "failed",
+                Some(format!("无法写入中断恢复记录，未移动原文件：{e}")),
+            );
+        }
+    };
     if let Err(e) = std::fs::rename(&copy_abs, &bak) {
         let _ = std::fs::remove_file(&bak);
+        let _ = std::fs::remove_file(&journal);
         return item(display, "failed", Some(format!("备份失败：{e}")));
     }
     before_link();
     match std::fs::hard_link(&anchor_abs, &copy_abs) {
         Ok(()) => {
-            let (detail, verified_freed_bytes) = match std::fs::remove_file(&bak) {
+            let (mut detail, verified_freed_bytes) = match std::fs::remove_file(&bak) {
                 Ok(()) => match allocation_before {
                     Some(info) if info.link_count <= 1 => (None, Some(info.bytes)),
                     Some(info) => (
@@ -193,10 +331,14 @@ fn merge_one_guarded(
                     None => (None, None),
                 },
                 Err(e) => (
-                    Some(format!("已合并，但备份文件残留（可手动删除）：{e}")),
+                    Some(format!("已合并，但备份文件残留，将在下次启动时提示：{e}")),
                     None,
                 ),
             };
+            if let Err(e) = std::fs::remove_file(&journal) {
+                let note = format!("恢复记录残留，将在下次启动时处理：{e}");
+                detail = Some(detail.map_or(note.clone(), |text| format!("{text}；{note}")));
+            }
             MergeItemResult {
                 path: display,
                 status: "merged".into(),
@@ -206,11 +348,21 @@ fn merge_one_guarded(
         }
         Err(e) => {
             let rollback = restore_backup_no_replace(&bak, &copy_abs);
+            let journal_cleanup = if rollback.is_ok() {
+                std::fs::remove_file(&journal).err()
+            } else {
+                None
+            };
             item(
                 display,
                 "failed",
                 Some(match rollback {
-                    Ok(()) => format!("硬链接失败（已回滚）：{e}"),
+                    Ok(()) => match journal_cleanup {
+                        Some(cleanup) => format!(
+                            "硬链接失败（已回滚）：{e}；恢复记录清理失败，将在下次启动时处理：{cleanup}"
+                        ),
+                        None => format!("硬链接失败（已回滚）：{e}"),
+                    },
                     Err(re) => format!(
                         "硬链接失败：{e}；且回滚未替换现有路径，备份在 {}：{re}",
                         bak.display()
@@ -223,6 +375,7 @@ fn merge_one_guarded(
 
 /// 合并全部重复组。每组第一份为锚点保留原位，其余副本合并到锚点。
 pub fn merge_duplicates(root: &Path, groups: &[DupeGroup]) -> MergeReport {
+    let recovery = recover_interrupted_merges(root);
     let mut results = Vec::new();
     let mut merged_logical_bytes = 0u64;
     for g in groups {
@@ -278,6 +431,7 @@ pub fn merge_duplicates(root: &Path, groups: &[DupeGroup]) -> MergeReport {
         verified_freed_bytes,
         skipped,
         failed,
+        recovery,
     }
 }
 
@@ -498,5 +652,237 @@ mod tests {
         let report = merge_duplicates(root, &[group(root, 12, &["a.bin", "b.bin"])]);
         assert_eq!(report.merged_files, 1);
         assert_eq!(report.verified_freed_bytes, Some(before.bytes));
+    }
+
+    #[test]
+    fn merge_process_abort_child() {
+        let Some(root) = std::env::var_os("STORAGESCOPE_TEST_ABORT_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let anchor = FileEntry {
+            rel_path: "a.bin".into(),
+            name: String::new(),
+            size: 12,
+            modified: None,
+            ext: None,
+        };
+        let copy = FileEntry {
+            rel_path: "b.bin".into(),
+            size: 12,
+            ..anchor.clone()
+        };
+        let hash = crate::rules::hash_file_for_merge(&root.join("a.bin")).unwrap();
+        merge_one_guarded(&root, &anchor, &copy, hash, || std::process::abort());
+    }
+
+    #[test]
+    fn merge_recovers_after_real_process_abort() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.bin"), b"same-content").unwrap();
+        fs::write(root.join("b.bin"), b"same-content").unwrap();
+        let original = group(root, 12, &["a.bin", "b.bin"]);
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "dedup::tests::merge_process_abort_child",
+                "--nocapture",
+            ])
+            .env("STORAGESCOPE_TEST_ABORT_ROOT", root)
+            .status()
+            .unwrap();
+        assert!(!status.success());
+        assert!(!root.join("b.bin").exists());
+        assert_eq!(
+            fs::read(root.join("b.ss-merge-bak")).unwrap(),
+            b"same-content"
+        );
+        assert!(journal_path(root, "b.bin").exists());
+
+        let report = merge_duplicates(root, &[original]);
+        assert_eq!(report.merged_files, 1);
+        assert!(report
+            .recovery
+            .iter()
+            .any(|message| message.contains("已从中断合并恢复")));
+        assert_eq!(fs::read(root.join("b.bin")).unwrap(), b"same-content");
+        assert!(!root.join("b.ss-merge-bak").exists());
+        assert!(!journal_path(root, "b.bin").exists());
+    }
+
+    #[test]
+    fn interrupted_merge_restores_before_retrying() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.bin"), b"same-content").unwrap();
+        fs::write(root.join("b.bin"), b"same-content").unwrap();
+        let anchor = FileEntry {
+            rel_path: "a.bin".into(),
+            name: String::new(),
+            size: 12,
+            modified: None,
+            ext: None,
+        };
+        let copy = FileEntry {
+            rel_path: "b.bin".into(),
+            size: 12,
+            ..anchor.clone()
+        };
+        let original = group(root, 12, &["a.bin", "b.bin"]);
+        let journal = journal_path(root, "b.bin");
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            merge_one_guarded(root, &anchor, &copy, original.hash, || {
+                panic!("simulated process interruption after backup rename")
+            });
+        }));
+        assert!(interrupted.is_err());
+        assert!(!root.join("b.bin").exists());
+        assert_eq!(
+            fs::read(root.join("b.ss-merge-bak")).unwrap(),
+            b"same-content"
+        );
+        assert!(journal.exists());
+
+        let report = merge_duplicates(root, &[original]);
+        assert_eq!(report.merged_files, 1);
+        assert_eq!(report.failed, 0);
+        assert!(report
+            .recovery
+            .iter()
+            .any(|message| message.contains("已从中断合并恢复")));
+        assert_eq!(fs::read(root.join("a.bin")).unwrap(), b"same-content");
+        assert_eq!(fs::read(root.join("b.bin")).unwrap(), b"same-content");
+        assert_eq!(
+            crate::rules::file_identity(&root.join("a.bin")).unwrap(),
+            crate::rules::file_identity(&root.join("b.bin")).unwrap()
+        );
+        assert!(!root.join("b.ss-merge-bak").exists());
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn unicode_paths_merge_without_backup_or_journal_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir(root.join("资料 📁")).unwrap();
+        fs::write(root.join("锚点 😀.bin"), b"same-content").unwrap();
+        fs::write(root.join("资料 📁/副本 ②.bin"), b"same-content").unwrap();
+        let report = merge_duplicates(
+            root,
+            &[group(root, 12, &["锚点 😀.bin", "资料 📁/副本 ②.bin"])],
+        );
+        assert_eq!(report.merged_files, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(
+            fs::read(root.join("资料 📁/副本 ②.bin")).unwrap(),
+            b"same-content"
+        );
+        assert!(!root.join("资料 📁/副本 ②.ss-merge-bak").exists());
+        assert_eq!(
+            fs::read_dir(root)
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".storagescope-merge-"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn long_paths_execute_or_fail_without_losing_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let deep = (0..22)
+            .map(|index| format!("long-directory-{index:02}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        let copy_rel = format!("{deep}/copy.bin");
+        let copy_abs = root.join(copy_rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        fs::create_dir_all(copy_abs.parent().unwrap()).unwrap();
+        fs::write(root.join("a.bin"), b"same-content").unwrap();
+        fs::write(&copy_abs, b"same-content").unwrap();
+        assert!(copy_abs.to_string_lossy().len() > 260);
+
+        let report = merge_duplicates(root, &[group(root, 12, &["a.bin", &copy_rel])]);
+        assert_eq!(report.failed, 0, "{:?}", report.results);
+        assert_eq!(report.merged_files, 1);
+        assert_eq!(fs::read(&copy_abs).unwrap(), b"same-content");
+        assert_eq!(
+            crate::rules::file_identity(&root.join("a.bin")).unwrap(),
+            crate::rules::file_identity(&copy_abs).unwrap()
+        );
+        assert!(!copy_abs.with_extension("ss-merge-bak").exists());
+        assert!(!journal_path(root, &copy_rel).exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_copy_fails_without_changing_content_or_identity() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.bin"), b"same-content").unwrap();
+        fs::write(root.join("b.bin"), b"same-content").unwrap();
+        let before = crate::rules::file_identity(&root.join("b.bin"))
+            .unwrap()
+            .unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(root.join("b.bin"))
+            .unwrap();
+
+        let report = merge_duplicates(root, &[group(root, 12, &["a.bin", "b.bin"])]);
+        drop(lock);
+        assert_eq!(report.merged_files, 0);
+        assert_eq!(report.failed, 1);
+        assert_eq!(fs::read(root.join("b.bin")).unwrap(), b"same-content");
+        assert_eq!(
+            crate::rules::file_identity(&root.join("b.bin")).unwrap(),
+            Some(before)
+        );
+        assert!(!root.join("b.ss-merge-bak").exists());
+        assert!(!journal_path(root, "b.bin").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn access_denied_copy_is_preserved_and_acl_is_restored() {
+        struct ResetAcl(PathBuf);
+        impl Drop for ResetAcl {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("icacls")
+                    .arg(&self.0)
+                    .args(["/reset"])
+                    .status();
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let copy = root.join("b.bin");
+        fs::write(root.join("a.bin"), b"same-content").unwrap();
+        fs::write(&copy, b"same-content").unwrap();
+        let reset = ResetAcl(copy.clone());
+        let user = std::env::var("USERNAME").unwrap();
+        let status = std::process::Command::new("icacls")
+            .arg(&copy)
+            .args(["/deny", &format!("{user}:(R,W)")])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let report = merge_duplicates(root, &[group(root, 12, &["a.bin", "b.bin"])]);
+        assert_eq!(report.merged_files, 0);
+        assert_eq!(report.failed, 1);
+        assert!(!root.join("b.ss-merge-bak").exists());
+        assert!(!journal_path(root, "b.bin").exists());
+        drop(reset);
+        assert_eq!(fs::read(copy).unwrap(), b"same-content");
     }
 }

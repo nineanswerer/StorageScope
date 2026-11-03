@@ -55,10 +55,12 @@ fn is_reparse_point(entry: &std::fs::DirEntry) -> bool {
 
 impl Scanner {
     pub fn new(config: ScanConfig) -> Self {
-        Self {
-            config,
-            cancel: Arc::new(AtomicBool::new(false)),
-        }
+        Self::with_cancel(config, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// 使用桌面操作持有的取消令牌；每个操作使用独立令牌，避免相互误取消。
+    pub fn with_cancel(config: ScanConfig, cancel: Arc<AtomicBool>) -> Self {
+        Self { config, cancel }
     }
 
     /// 取消句柄：在另一线程（如 Ctrl+C 处理器）中置位即可中止扫描。

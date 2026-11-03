@@ -2,15 +2,86 @@
 //! 核心逻辑全部在 storagescope-core；这里只做调用、事件转发与状态管理。
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use storagescope_core::diff::DiffReport;
 use storagescope_core::model::DirStat;
 use storagescope_core::{diff as ssdiff, export, snapshot, stats, ScanConfig, Scanner};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
-/// 当前扫描的取消句柄（同一时间只允许一个扫描）。
-struct ScanCancel(Mutex<Option<Arc<AtomicBool>>>);
+#[tauri::command]
+fn snapshot_database_path(app: AppHandle) -> Result<String, String> {
+    let dir = match std::env::var_os("STORAGESCOPE_DATA_DIR") {
+        Some(override_dir) => {
+            let path = PathBuf::from(override_dir);
+            if !path.is_absolute() {
+                return Err("STORAGESCOPE_DATA_DIR 必须是绝对路径".into());
+            }
+            path
+        }
+        None => app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| format!("无法定位应用数据目录：{e}"))?,
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| format!("无法创建应用数据目录：{e}"))?;
+    let dir = dir
+        .canonicalize()
+        .map_err(|e| format!("无法解析应用数据目录：{e}"))?;
+    Ok(dir.join("storagescope-snapshots.db").display().to_string())
+}
+
+/// 串行执行扫描、分析与写操作，取消令牌只属于当前操作。
+struct OperationState {
+    active: Mutex<Option<ActiveOperation>>,
+}
+
+struct ActiveOperation {
+    id: u64,
+    cancel: Arc<AtomicBool>,
+}
+
+struct OperationGuard {
+    state: Arc<OperationState>,
+    id: u64,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for OperationGuard {
+    fn drop(&mut self) {
+        let mut active = self.state.active.lock().unwrap();
+        if active.as_ref().is_some_and(|operation| operation.id == self.id) {
+            *active = None;
+        }
+    }
+}
+
+static NEXT_OPERATION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn begin_operation(state: &Arc<OperationState>) -> Result<OperationGuard, String> {
+    let mut active = state.active.lock().unwrap();
+    if active.is_some() {
+        return Err("另一个扫描、分析或文件操作仍在进行，请等待完成或先取消".into());
+    }
+    let id = NEXT_OPERATION_ID.fetch_add(1, Ordering::Relaxed);
+    let cancel = Arc::new(AtomicBool::new(false));
+    *active = Some(ActiveOperation {
+        id,
+        cancel: cancel.clone(),
+    });
+    Ok(OperationGuard {
+        state: state.clone(),
+        id,
+        cancel,
+    })
+}
+
+fn emit_recovery(app: &AppHandle, root: &Path) {
+    let messages = storagescope_core::dedup::recover_interrupted_merges(root);
+    if !messages.is_empty() {
+        let _ = app.emit("merge-recovery", serde_json::json!({ "messages": messages }));
+    }
+}
 
 /// 所有文件操作共用的边界校验：相对路径解析后必须仍位于已规范化的扫描根目录内。
 fn resolve_within_root(root_path: &Path, rel: &str) -> Result<PathBuf, String> {
@@ -35,9 +106,12 @@ fn resolve_trash_target(root_path: &Path, rel: &str) -> Result<PathBuf, String> 
 }
 
 #[tauri::command]
-fn cancel_scan(state: State<ScanCancel>) {
-    if let Some(c) = state.0.lock().unwrap().as_ref() {
-        c.store(true, Ordering::Relaxed);
+fn cancel_operation(state: State<Arc<OperationState>>) -> bool {
+    if let Some(operation) = state.active.lock().unwrap().as_ref() {
+        operation.cancel.store(true, Ordering::Relaxed);
+        true
+    } else {
+        false
     }
 }
 
@@ -46,17 +120,24 @@ fn cancel_scan(state: State<ScanCancel>) {
 #[tauri::command]
 async fn scan_directory(
     app: AppHandle,
-    state: State<'_, ScanCancel>,
+    state: State<'_, Arc<OperationState>>,
     path: String,
 ) -> Result<serde_json::Value, String> {
-    let scanner = Scanner::new(ScanConfig {
-        follow_links: false,
-        progress_every: 500,
-    });
-    *state.0.lock().unwrap() = Some(scanner.cancel_handle());
+    let _operation = begin_operation(state.inner())?;
+    let scanner = Scanner::with_cancel(
+        ScanConfig {
+            follow_links: false,
+            progress_every: 500,
+        },
+        _operation.cancel.clone(),
+    );
     tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&path)
+            .canonicalize()
+            .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
+        emit_recovery(&app, &root);
         let app2 = app.clone();
-        let outcome = scanner.scan(Path::new(&path), move |p, cur| {
+        let outcome = scanner.scan(&root, move |p, cur| {
             let _ = app2.emit(
                 "scan-progress",
                 serde_json::json!({
@@ -79,18 +160,25 @@ async fn scan_directory(
 #[tauri::command]
 async fn save_snapshot(
     app: AppHandle,
-    state: State<'_, ScanCancel>,
+    state: State<'_, Arc<OperationState>>,
     path: String,
     db: String,
 ) -> Result<serde_json::Value, String> {
-    let scanner = Scanner::new(ScanConfig {
-        follow_links: false,
-        progress_every: 500,
-    });
-    *state.0.lock().unwrap() = Some(scanner.cancel_handle());
+    let _operation = begin_operation(state.inner())?;
+    let scanner = Scanner::with_cancel(
+        ScanConfig {
+            follow_links: false,
+            progress_every: 500,
+        },
+        _operation.cancel.clone(),
+    );
     tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&path)
+            .canonicalize()
+            .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
+        emit_recovery(&app, &root);
         let app2 = app.clone();
-        let outcome = scanner.scan(Path::new(&path), move |p, cur| {
+        let outcome = scanner.scan(&root, move |p, cur| {
             let _ = app2.emit(
                 "scan-progress",
                 serde_json::json!({
@@ -127,7 +215,13 @@ fn list_snapshots(db: String) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-async fn diff_snapshots(db: String, old: i64, new: i64) -> Result<DiffReport, String> {
+async fn diff_snapshots(
+    state: State<'_, Arc<OperationState>>,
+    db: String,
+    old: i64,
+    new: i64,
+) -> Result<DiffReport, String> {
+    let _operation = begin_operation(state.inner())?;
     tauri::async_runtime::spawn_blocking(move || {
         let conn = snapshot::open(Path::new(&db)).map_err(|e| e.to_string())?;
         ssdiff::diff(&conn, old, new)
@@ -141,21 +235,29 @@ async fn diff_snapshots(db: String, old: i64, new: i64) -> Result<DiffReport, St
 #[tauri::command]
 async fn analyze_cleanup(
     app: AppHandle,
-    state: State<'_, ScanCancel>,
+    state: State<'_, Arc<OperationState>>,
     path: String,
     db: String,
     top: usize,
     dupe_min_mib: u64,
     skip_dupes: bool,
 ) -> Result<serde_json::Value, String> {
-    let scanner = Scanner::new(ScanConfig {
-        follow_links: false,
-        progress_every: 500,
-    });
-    *state.0.lock().unwrap() = Some(scanner.cancel_handle());
+    let _operation = begin_operation(state.inner())?;
+    let scanner = Scanner::with_cancel(
+        ScanConfig {
+            follow_links: false,
+            progress_every: 500,
+        },
+        _operation.cancel.clone(),
+    );
+    let cancel = _operation.cancel.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&path)
+            .canonicalize()
+            .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
+        emit_recovery(&app, &root);
         let app2 = app.clone();
-        let outcome = scanner.scan(Path::new(&path), move |p, cur| {
+        let outcome = scanner.scan(&root, move |p, cur| {
             let _ = app2.emit(
                 "scan-progress",
                 serde_json::json!({
@@ -177,23 +279,31 @@ async fn analyze_cleanup(
                 serde_json::json!({ "done": done, "total": total }),
             );
         };
-        let baseline_snapshot_id = if db.trim().is_empty() {
-            None
-        } else {
-            let conn = snapshot::open(Path::new(&db)).map_err(|e| e.to_string())?;
-            snapshot::save(&conn, &outcome).map_err(|e| e.to_string())?
-        };
         let mut report = if skip_dupes {
             storagescope_core::rules::analyze_light(&outcome, &tree, top)
         } else {
-            storagescope_core::rules::analyze(
-                Path::new(&path),
+            storagescope_core::rules::analyze_cancellable(
+                &root,
                 &outcome,
                 &tree,
                 top,
                 dupe_min_mib.max(1) * 1024 * 1024,
                 Some(&mut dupe_cb),
+                &cancel,
             )
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    "分析已取消：未生成清理计划".into()
+                } else {
+                    format!("分析失败：{e}")
+                }
+            })?
+        };
+        let baseline_snapshot_id = if db.trim().is_empty() {
+            None
+        } else {
+            let conn = snapshot::open(Path::new(&db)).map_err(|e| e.to_string())?;
+            snapshot::save(&conn, &outcome).map_err(|e| e.to_string())?
         };
         report.baseline_snapshot_id = baseline_snapshot_id;
         serde_json::to_value(report).map_err(|e| e.to_string())
@@ -226,20 +336,25 @@ fn export_diff(report: DiffReport, path: String, format: String) -> Result<(), S
 /// 报告只记录待清空大小，不把回收站动作写成已经释放空间。
 #[tauri::command]
 async fn execute_cleanup_plan(
+    state: State<'_, Arc<OperationState>>,
     root: String,
     analysis: storagescope_core::rules::AnalysisReport,
     rel_paths: Vec<String>,
     reference_dirs: Vec<String>,
     excluded_dirs: Vec<String>,
 ) -> Result<serde_json::Value, String> {
+    let _operation = begin_operation(state.inner())?;
     tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&root)
+            .canonicalize()
+            .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
         let plan = storagescope_core::plan::build_cleanup_plan(
             &analysis,
             &rel_paths,
             &reference_dirs,
             &excluded_dirs,
         )?;
-        let report = storagescope_core::plan::execute_cleanup_plan(Path::new(&root), &plan)?;
+        let report = storagescope_core::plan::execute_cleanup_plan(&root, &plan)?;
         serde_json::to_value(report).map_err(|e| e.to_string())
     })
     .await
@@ -250,11 +365,13 @@ async fn execute_cleanup_plan(
 #[tauri::command]
 async fn merge_duplicates(
     app: AppHandle,
+    state: State<'_, Arc<OperationState>>,
     root: String,
     groups: Vec<storagescope_core::rules::DupeGroup>,
     reference_dirs: Vec<String>,
     excluded_dirs: Vec<String>,
 ) -> Result<serde_json::Value, String> {
+    let _operation = begin_operation(state.inner())?;
     tauri::async_runtime::spawn_blocking(move || {
         storagescope_core::plan::validate_merge_groups(&groups, &reference_dirs, &excluded_dirs)?;
         let root_path = Path::new(&root)
@@ -301,10 +418,13 @@ fn reveal_in_explorer(root: String, rel_path: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(ScanCancel(Mutex::new(None)))
+        .manage(Arc::new(OperationState {
+            active: Mutex::new(None),
+        }))
         .invoke_handler(tauri::generate_handler![
+            snapshot_database_path,
             scan_directory,
-            cancel_scan,
+            cancel_operation,
             save_snapshot,
             list_snapshots,
             diff_snapshots,
@@ -321,7 +441,22 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_trash_target, resolve_within_root};
+    use super::{begin_operation, resolve_trash_target, resolve_within_root, OperationState};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn operations_are_mutually_exclusive_and_release_on_drop() {
+        let state = Arc::new(OperationState {
+            active: Mutex::new(None),
+        });
+        let first = begin_operation(&state).unwrap();
+        assert!(begin_operation(&state).is_err());
+        assert!(!first.cancel.load(std::sync::atomic::Ordering::Relaxed));
+        let id = first.id;
+        drop(first);
+        let second = begin_operation(&state).unwrap();
+        assert_ne!(id, second.id);
+    }
 
     #[test]
     fn file_operations_reject_parent_directory_escape() {

@@ -149,6 +149,29 @@ fn dupes_respect_cancellation_free_empty_dir() {
 }
 
 #[test]
+fn duplicate_hashing_stops_when_operation_is_cancelled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // 进度回调每 200 个文件触发；202 组确保测试覆盖真实的阶段内取消。
+    for index in 0..202 {
+        let content = format!("duplicate-content-{index:04}");
+        fs::write(root.join(format!("a-{index}.bin")), &content).unwrap();
+        fs::write(root.join(format!("b-{index}.bin")), &content).unwrap();
+    }
+    let outcome = Scanner::new(ScanConfig::default()).scan(root, |_, _| {});
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let mut progress = |done, _total| {
+        if done > 0 {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    };
+    let error =
+        rules::find_duplicates_cancellable(root, &outcome, 1, Some(&mut progress), Some(&cancel))
+            .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+}
+
+#[test]
 fn existing_hard_links_are_not_counted_as_reclaimable_duplicates() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

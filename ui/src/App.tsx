@@ -190,7 +190,7 @@ function BrandMark() {
 export default function App() {
   const [section, setSection] = useState<Section>("scan");
   const [path, setPath] = useState("");
-  const [db, setDb] = useState("storagescope-snapshots.db");
+  const [db, setDb] = useState("");
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [tree, setTree] = useState<DirStat | null>(null);
@@ -223,6 +223,7 @@ export default function App() {
     verified_freed_bytes: number | null;
     skipped: number;
     failed: number;
+    recovery: string[];
   };
   type CleanupExecutionReport = {
     results: { path: string; status: string; logical_bytes: number; detail: string | null }[];
@@ -279,7 +280,8 @@ export default function App() {
       setMessage(
         `空间合并完成：${r.merged_files} 个副本，合并逻辑大小 ${humanSize(r.merged_logical_bytes)}；${freed}` +
           `${r.skipped > 0 ? `；${r.skipped} 个跳过` : ""}${r.failed > 0 ? `；${r.failed} 个失败` : ""}` +
-          (resultNotes ? `\n${resultNotes}` : "")
+          (resultNotes ? `\n${resultNotes}` : "") +
+          (r.recovery.length > 0 ? `\n恢复记录：\n${r.recovery.join("\n")}` : "")
       );
     } catch (e) {
       setMessage(String(e));
@@ -487,15 +489,22 @@ export default function App() {
   }
 
   useEffect(() => {
+    void invoke<string>("snapshot_database_path").then(setDb).catch((error) => {
+      setMessage(`快照数据库初始化失败：${String(error)}`);
+    });
     const un = listen<Progress>("scan-progress", (e) => setProgress(e.payload));
     const un2 = listen<AnalyzeProgress>("analyze-progress", (e) =>
       setAnalyzeProgress(e.payload)
     );
     const un3 = listen<AnalyzeProgress>("merge-progress", (e) => setMergeProgress(e.payload));
+    const un4 = listen<{ messages: string[] }>("merge-recovery", (e) => {
+      setMessage(`合并中断恢复：\n${e.payload.messages.join("\n")}`);
+    });
     return () => {
       un.then((f) => f());
       un2.then((f) => f());
       un3.then((f) => f());
+      un4.then((f) => f());
     };
   }, []);
 
@@ -748,7 +757,7 @@ export default function App() {
                       开始扫描
                     </button>
                   ) : (
-                    <button className="danger" onClick={() => invoke("cancel_scan")}>
+                    <button className="danger" onClick={() => invoke("cancel_operation")}>
                       取消扫描
                     </button>
                   )}
@@ -1207,7 +1216,7 @@ export default function App() {
                       {analysis ? "重新分析" : "开始分析"}
                     </button>
                   ) : (
-                    <button className="danger" onClick={() => invoke("cancel_scan")}>
+                    <button className="danger" onClick={() => invoke("cancel_operation")}>
                       取消分析
                     </button>
                   )}

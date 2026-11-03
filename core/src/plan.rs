@@ -845,6 +845,28 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn locked_cleanup_target_is_not_recycled() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("big.bin");
+        fs::write(&path, vec![b'a'; 1024 * 1024]).unwrap();
+        let report = analysis(tmp.path());
+        let plan = build_cleanup_plan(&report, &["big.bin".into()], &[], &[]).unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        let execution = execute_cleanup_plan(tmp.path(), &plan).unwrap();
+        drop(lock);
+        assert_eq!(execution.succeeded, 0);
+        assert_eq!(execution.results[0].status, "skipped_changed");
+        assert_eq!(fs::read(path).unwrap(), vec![b'a'; 1024 * 1024]);
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn junction_to_protected_directory_is_rejected() {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir(tmp.path().join("cache")).unwrap();

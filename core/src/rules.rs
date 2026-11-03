@@ -233,6 +233,7 @@ impl<'a> SharedProgress<'a> {
 fn par_hash<F>(
     files: &[&FileEntry],
     progress: &SharedProgress,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
     hash_fn: F,
 ) -> Vec<std::io::Result<u64>>
 where
@@ -244,6 +245,9 @@ where
     std::thread::scope(|s| {
         for _ in 0..HASH_WORKERS.min(files.len().max(1)) {
             s.spawn(|| loop {
+                if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+                    break;
+                }
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if i >= files.len() {
                     break;
@@ -256,7 +260,14 @@ where
     });
     results
         .into_iter()
-        .map(|m| m.into_inner().unwrap().unwrap())
+        .map(|m| {
+            m.into_inner().unwrap().unwrap_or_else(|| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "哈希已取消",
+                ))
+            })
+        })
         .collect()
 }
 
@@ -297,6 +308,32 @@ pub fn find_duplicates<'a>(
     min_size: u64,
     on_progress: Option<&'a mut DupeProgress<'a>>,
 ) -> (Vec<DupeGroup>, u64, u64) {
+    match find_duplicates_cancellable(root, outcome, min_size, on_progress, None) {
+        Ok(result) => result,
+        Err(_) => unreachable!("无取消令牌的重复文件分析不会返回取消错误"),
+    }
+}
+
+fn check_cancel(cancel: Option<&std::sync::atomic::AtomicBool>) -> std::io::Result<()> {
+    if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "重复文件分析已取消",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// 可取消的重复文件检测；桌面端在扫描和全文哈希阶段共用同一个操作令牌。
+pub fn find_duplicates_cancellable<'a>(
+    root: &Path,
+    outcome: &ScanOutcome,
+    min_size: u64,
+    on_progress: Option<&'a mut DupeProgress<'a>>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> std::io::Result<(Vec<DupeGroup>, u64, u64)> {
+    check_cancel(cancel)?;
     // 1. 按大小分组，只保留有重复嫌疑的组
     let mut by_size: HashMap<u64, Vec<&FileEntry>> = HashMap::new();
     for f in &outcome.files {
@@ -320,7 +357,10 @@ pub fn find_duplicates<'a>(
     let mut hash_errors = 0u64;
 
     // 2. 头部指纹（并行），按 (大小, 指纹) 二次分组
-    let head_results = par_hash(&candidates, &progress, |f| head_fingerprint(root, f));
+    let head_results = par_hash(&candidates, &progress, cancel, |f| {
+        head_fingerprint(root, f)
+    });
+    check_cancel(cancel)?;
     let mut by_head: HashMap<(u64, u64), Vec<&FileEntry>> = HashMap::new();
     for (f, r) in candidates.iter().zip(head_results) {
         match r {
@@ -338,7 +378,8 @@ pub fn find_duplicates<'a>(
         .collect();
 
     // 3. 全文哈希（并行）最终确认，按 (大小, 全文哈希) 分组
-    let full_results = par_hash(&head_files, &progress, |f| full_hash(root, f));
+    let full_results = par_hash(&head_files, &progress, cancel, |f| full_hash(root, f));
+    check_cancel(cancel)?;
     let mut by_hash: HashMap<(u64, u64), Vec<String>> = HashMap::new();
     for (f, r) in head_files.iter().zip(full_results) {
         match r {
@@ -354,6 +395,7 @@ pub fn find_duplicates<'a>(
     }
     let mut final_groups: Vec<DupeGroup> = Vec::new();
     for ((size, hash), files) in by_hash {
+        check_cancel(cancel)?;
         let file_count = files.len() as u64;
         match verified_duplicate_group(root, size, hash, files) {
             Ok(Some(group)) => final_groups.push(group),
@@ -362,7 +404,7 @@ pub fn find_duplicates<'a>(
         }
     }
     final_groups.sort_by_key(|a| std::cmp::Reverse(a.wasted));
-    (final_groups, hashed_bytes, hash_errors)
+    Ok((final_groups, hashed_bytes, hash_errors))
 }
 
 // 纯数据装配函数保留显式参数，避免为减少参数计数引入额外可变状态。
@@ -417,6 +459,32 @@ pub fn analyze<'a>(
         hashed_bytes,
         hash_errors,
     )
+}
+
+/// 可取消的完整分析；保留 `analyze` 给 CLI 和现有调用方使用。
+pub fn analyze_cancellable<'a>(
+    root: &Path,
+    outcome: &ScanOutcome,
+    tree: &DirStat,
+    top_n_big: usize,
+    dupe_min_size: u64,
+    on_dupe_progress: Option<&'a mut DupeProgress<'a>>,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> std::io::Result<AnalysisReport> {
+    let cache_hits = find_cache_hits(tree);
+    let big_files = find_big_files(outcome, top_n_big);
+    let (dupe_groups, hashed_bytes, hash_errors) =
+        find_duplicates_cancellable(root, outcome, dupe_min_size, on_dupe_progress, Some(cancel))?;
+    Ok(finish_report(
+        root,
+        outcome,
+        tree,
+        cache_hits,
+        big_files,
+        dupe_groups,
+        hashed_bytes,
+        hash_errors,
+    ))
 }
 
 /// 轻量分析：跳过重复文件检测（不读文件内容，秒出）。
