@@ -1,5 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+/// 保留文件系统可提供的最高修改时间精度，避免同秒同尺寸修改漏检。
+pub fn modified_timestamp(metadata: &std::fs::Metadata) -> Option<i64> {
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos()
+        .try_into()
+        .ok()
+}
+
 /// 文件条目：仅记录元数据，不读取内容。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -8,7 +20,8 @@ pub struct FileEntry {
     pub name: String,
     /// 逻辑大小（字节）。分配大小为后续可选字段，不与此混用。
     pub size: u64,
-    /// 修改时间，Unix 秒；读取失败为 None。
+    /// 修改时间，Unix 纳秒；读取失败为 None。
+    /// 纳秒精度用于识别同一秒内的同尺寸修改，实际精度取决于文件系统。
     pub modified: Option<i64>,
     /// 小写扩展名（不含点）。
     pub ext: Option<String>,

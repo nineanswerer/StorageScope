@@ -413,16 +413,44 @@ fn is_system_critical(_path: &Path) -> bool {
     false
 }
 
+#[cfg(windows)]
+fn is_reparse_metadata(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_metadata(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+/// 执行目标默认拒绝路径中的任何链接组件，避免同根 junction 重定向到保护目录。
 pub fn resolve_cleanup_target(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("扫描根目录不可解析：{error}"))?;
     let rel = normalize_relative(rel)?;
-    let absolute = root
-        .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
+    let mut lexical = root.clone();
+    for component in rel.split('/') {
+        lexical.push(component);
+        let metadata = std::fs::symlink_metadata(&lexical)
+            .map_err(|error| format!("无法复核路径组件 {}：{error}", lexical.display()))?;
+        if is_reparse_metadata(&metadata) {
+            return Err(format!(
+                "路径包含链接或重解析点，已拒绝执行：{}",
+                lexical.display()
+            ));
+        }
+    }
+    let absolute = lexical
         .canonicalize()
         .map_err(|error| format!("无法重新解析目标：{error}"))?;
     if absolute == root {
         return Err("拒绝处理整个扫描根目录".into());
     }
-    if !absolute.starts_with(root) {
+    if !absolute.starts_with(&root) {
         return Err("链接或路径解析后越出扫描根目录".into());
     }
     if is_system_critical(&absolute) {
@@ -467,6 +495,18 @@ fn verify_target(
         return Err(protected(reason));
     }
     let absolute = resolve_cleanup_target(root, &expected.rel_path).map_err(protected)?;
+    let resolved_rel = absolute
+        .strip_prefix(root)
+        .map_err(|_| protected("解析后的目标越出扫描根目录"))?
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    if let Some(reason) =
+        protection_reason(&resolved_rel, &plan.reference_dirs, &plan.excluded_dirs)
+    {
+        return Err(protected(format!("解析后的{reason}")));
+    }
     if expected.is_dir {
         let outcome = Scanner::new(ScanConfig {
             follow_links: false,
@@ -488,11 +528,7 @@ fn verify_target(
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return Err(changed("目标已不再是普通文件，未执行"));
         }
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs() as i64);
+        let modified = modified_timestamp(&metadata);
         if metadata.len() != expected.logical_size || modified != expected.modified {
             return Err(changed("文件大小或修改时间已变化，未执行"));
         }
@@ -540,6 +576,14 @@ pub fn execute_cleanup_plan(
     root: &Path,
     plan: &CleanupPlan,
 ) -> Result<CleanupExecutionReport, String> {
+    execute_cleanup_plan_guarded(root, plan, |_| {})
+}
+
+fn execute_cleanup_plan_guarded(
+    root: &Path,
+    plan: &CleanupPlan,
+    mut before_trash: impl FnMut(&Path),
+) -> Result<CleanupExecutionReport, String> {
     let root = root
         .canonicalize()
         .map_err(|error| format!("扫描根目录不可解析：{error}"))?;
@@ -547,7 +591,13 @@ pub fn execute_cleanup_plan(
     let mut results = Vec::new();
     for target in &plan.targets {
         let expected = &target.expectation;
-        match verify_target(&root, target, plan) {
+        let verified = verify_target(&root, target, plan).and_then(|absolute| {
+            before_trash(&absolute);
+            // 写操作前再次核对，稳定拦截复核后新增、替换和重解析点注入。
+            verify_duplicate_content(&root, plan).map_err(changed)?;
+            verify_target(&root, target, plan)
+        });
+        match verified {
             Ok(absolute) => {
                 let report = crate::cleanup::move_to_trash([&absolute]);
                 if let Some(item) = report.results.first() {
@@ -756,5 +806,67 @@ mod tests {
         let error = execute_cleanup_plan(tmp.path(), &plan).unwrap_err();
         assert!(error.contains("无法读取"));
         assert!(tmp.path().join("b.bin").exists());
+    }
+
+    #[test]
+    fn directory_change_after_first_verify_is_blocked() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("cache")).unwrap();
+        fs::write(tmp.path().join("cache/old.bin"), b"old").unwrap();
+        let report = analysis(tmp.path());
+        let plan = build_cleanup_plan(&report, &["cache".into()], &[], &[]).unwrap();
+        let root = tmp.path().to_path_buf();
+        let execution = execute_cleanup_plan_guarded(tmp.path(), &plan, move |_| {
+            fs::write(root.join("cache/new.bin"), b"new").unwrap();
+        })
+        .unwrap();
+        assert_eq!(execution.succeeded, 0);
+        assert_eq!(execution.results[0].status, "skipped_changed");
+        assert!(tmp.path().join("cache/new.bin").exists());
+        assert!(tmp.path().join("cache/old.bin").exists());
+    }
+
+    #[test]
+    fn file_replacement_after_first_verify_is_blocked() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("big.bin"), vec![b'a'; 1024 * 1024]).unwrap();
+        let report = analysis(tmp.path());
+        let plan = build_cleanup_plan(&report, &["big.bin".into()], &[], &[]).unwrap();
+        let root = tmp.path().to_path_buf();
+        let execution = execute_cleanup_plan_guarded(tmp.path(), &plan, move |_| {
+            fs::remove_file(root.join("big.bin")).unwrap();
+            fs::write(root.join("big.bin"), vec![b'b'; 1024 * 1024]).unwrap();
+        })
+        .unwrap();
+        assert_eq!(execution.succeeded, 0);
+        assert_eq!(execution.results[0].status, "skipped_changed");
+        assert_eq!(fs::read(tmp.path().join("big.bin")).unwrap()[0], b'b');
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_to_protected_directory_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("cache")).unwrap();
+        fs::create_dir(tmp.path().join("originals")).unwrap();
+        fs::write(tmp.path().join("cache/a.bin"), b"keep").unwrap();
+        fs::write(tmp.path().join("originals/a.bin"), b"keep").unwrap();
+        let report = analysis(tmp.path());
+        let plan =
+            build_cleanup_plan(&report, &["cache".into()], &["originals".into()], &[]).unwrap();
+        fs::rename(tmp.path().join("cache"), tmp.path().join("cache-old")).unwrap();
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(tmp.path().join("cache"))
+            .arg(tmp.path().join("originals"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let execution = execute_cleanup_plan(tmp.path(), &plan).unwrap();
+        assert_eq!(execution.succeeded, 0);
+        assert_eq!(execution.results[0].status, "skipped_protected");
+        assert!(tmp.path().join("originals/a.bin").exists());
+        assert!(tmp.path().join("cache-old/a.bin").exists());
     }
 }

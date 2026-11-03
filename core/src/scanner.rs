@@ -152,11 +152,7 @@ impl Scanner {
                                 rel_path: rel,
                                 name,
                                 size,
-                                modified: md
-                                    .modified()
-                                    .ok()
-                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                    .map(|d| d.as_secs() as i64),
+                                modified: modified_timestamp(&md),
                                 ext: path.extension().map(|e| e.to_string_lossy().to_lowercase()),
                             });
                             if (files.len() as u64).is_multiple_of(self.config.progress_every) {

@@ -80,12 +80,34 @@ fn item(path: String, status: &str, detail: Option<String>) -> MergeItemResult {
     }
 }
 
+/// 不替换地恢复备份：目标已存在时同时保留新文件和备份，绝不覆盖并发新内容。
+fn restore_backup_no_replace(bak: &Path, copy: &Path) -> std::io::Result<()> {
+    if copy.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "原路径已出现新文件，备份已保留",
+        ));
+    }
+    std::fs::hard_link(bak, copy)?;
+    std::fs::remove_file(bak)
+}
+
 /// 对单个副本执行 备份→硬链接→清理 合并。
 fn merge_one(
     root: &Path,
     anchor: &FileEntry,
     copy: &FileEntry,
     expected_hash: u64,
+) -> MergeItemResult {
+    merge_one_guarded(root, anchor, copy, expected_hash, || {})
+}
+
+fn merge_one_guarded(
+    root: &Path,
+    anchor: &FileEntry,
+    copy: &FileEntry,
+    expected_hash: u64,
+    before_link: impl FnOnce(),
 ) -> MergeItemResult {
     let display = copy.rel_path.clone();
     let anchor_abs = abs(root, &anchor.rel_path);
@@ -155,6 +177,7 @@ fn merge_one(
         let _ = std::fs::remove_file(&bak);
         return item(display, "failed", Some(format!("备份失败：{e}")));
     }
+    before_link();
     match std::fs::hard_link(&anchor_abs, &copy_abs) {
         Ok(()) => {
             let (detail, verified_freed_bytes) = match std::fs::remove_file(&bak) {
@@ -182,14 +205,14 @@ fn merge_one(
             }
         }
         Err(e) => {
-            let rollback = std::fs::rename(&bak, &copy_abs);
+            let rollback = restore_backup_no_replace(&bak, &copy_abs);
             item(
                 display,
                 "failed",
                 Some(match rollback {
                     Ok(()) => format!("硬链接失败（已回滚）：{e}"),
                     Err(re) => format!(
-                        "硬链接失败：{e}；且回滚失败，备份在 {}：{re}",
+                        "硬链接失败：{e}；且回滚未替换现有路径，备份在 {}：{re}",
                         bak.display()
                     ),
                 }),
@@ -331,6 +354,39 @@ mod tests {
         assert_eq!(
             fs::read(root.join("b.ss-merge-bak")).unwrap(),
             b"keep-this-backup"
+        );
+    }
+
+    #[test]
+    fn rollback_never_overwrites_a_new_file_at_the_copy_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.bin"), b"same-content").unwrap();
+        fs::write(root.join("b.bin"), b"same-content").unwrap();
+        let anchor = FileEntry {
+            rel_path: "a.bin".into(),
+            name: "a.bin".into(),
+            size: 12,
+            modified: None,
+            ext: Some("bin".into()),
+        };
+        let copy = FileEntry {
+            rel_path: "b.bin".into(),
+            name: "b.bin".into(),
+            size: 12,
+            modified: None,
+            ext: Some("bin".into()),
+        };
+        let hash = crate::rules::hash_file_for_merge(&root.join("a.bin")).unwrap();
+        let result = merge_one_guarded(root, &anchor, &copy, hash, || {
+            fs::write(root.join("b.bin"), b"concurrent-new").unwrap();
+        });
+
+        assert_eq!(result.status, "failed");
+        assert_eq!(fs::read(root.join("b.bin")).unwrap(), b"concurrent-new");
+        assert_eq!(
+            fs::read(root.join("b.ss-merge-bak")).unwrap(),
+            b"same-content"
         );
     }
 

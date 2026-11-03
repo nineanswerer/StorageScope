@@ -174,3 +174,34 @@ fn snapshot_roundtrip_preserves_stats() {
     assert_eq!(m.status, "complete");
     assert_eq!(m.stats_kind, snapshot::STATS_KIND);
 }
+
+#[test]
+fn failed_node_write_rolls_back_snapshot_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let conn = snapshot::open(&tmp.path().join("test.db")).unwrap();
+    let duplicate = || storagescope_core::model::FileEntry {
+        rel_path: "same.bin".into(),
+        name: "same.bin".into(),
+        size: 4,
+        modified: None,
+        ext: Some("bin".into()),
+    };
+    let outcome = storagescope_core::model::ScanOutcome {
+        root: tmp.path().display().to_string(),
+        files: vec![duplicate(), duplicate()],
+        dirs: vec![storagescope_core::model::DirEntry {
+            rel_path: ".".into(),
+            name: "root".into(),
+        }],
+        errors: Vec::new(),
+        cancelled: false,
+        duration_ms: 1,
+    };
+
+    assert!(snapshot::save(&conn, &outcome).is_err());
+    assert!(snapshot::list(&conn).unwrap().is_empty());
+    let node_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(node_count, 0);
+}

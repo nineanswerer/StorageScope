@@ -80,7 +80,9 @@ pub fn save(conn: &Connection, outcome: &ScanOutcome) -> DbResult<Option<i64>> {
     } else {
         "incomplete"
     };
-    conn.execute(
+    // 元数据、节点和异常必须在同一事务提交，避免强杀或写入失败留下孤立快照。
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "INSERT INTO snapshots (root, recorded_at, duration_ms, status, app_version, stats_kind, file_count, total_bytes, error_count)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
         params![
@@ -95,9 +97,7 @@ pub fn save(conn: &Connection, outcome: &ScanOutcome) -> DbResult<Option<i64>> {
             outcome.errors.len() as i64
         ],
     )?;
-    let id = conn.last_insert_rowid();
-
-    let tx = conn.unchecked_transaction()?;
+    let id = tx.last_insert_rowid();
     {
         let mut stmt = tx.prepare(
             "INSERT INTO nodes (snapshot_id, rel_path, name, node_type, logical_size, modified, ext)
