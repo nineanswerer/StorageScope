@@ -1,0 +1,169 @@
+{
+  "schema": "storagescope-performance-summary-v1",
+  "run_count": 3,
+  "recorded_at": [
+    "2026-11-02T23:12:16.5189338-07:00",
+    "2026-11-02T23:12:22.3599305-07:00",
+    "2026-11-02T23:12:27.8889310-07:00"
+  ],
+  "environment": {
+    "windows_caption": "Windows 10 Pro",
+    "windows_version": "10.0.19045",
+    "cpu": "AMD Ryzen 7 7735H with Radeon Graphics",
+    "logical_processors": 16,
+    "memory_bytes": 16312721408,
+    "note": "Single-run synthetic benchmark on this machine; disk cache and background load affect results."
+  },
+  "sample": {
+    "kind": "200 directories x 500 deterministic small files; three changes before second snapshot",
+    "file_count": 100000,
+    "total_bytes": 200597632,
+    "root_is_synthetic": true
+  },
+  "metrics": {
+    "scan": {
+      "elapsed_ms": {
+        "median": 578,
+        "min": 567,
+        "max": 606,
+        "runs": [
+          578,
+          567,
+          606
+        ]
+      },
+      "peak_working_set_bytes": {
+        "median": 22491136,
+        "min": 22470656,
+        "max": 22523904,
+        "runs": [
+          22470656,
+          22491136,
+          22523904
+        ]
+      }
+    },
+    "cancel": {
+      "elapsed_ms": {
+        "median": 124,
+        "min": 116,
+        "max": 135,
+        "runs": [
+          135,
+          116,
+          124
+        ]
+      },
+      "peak_working_set_bytes": {
+        "median": 6549504,
+        "min": 6545408,
+        "max": 6582272,
+        "runs": [
+          6545408,
+          6549504,
+          6582272
+        ]
+      }
+    },
+    "snapshot_1": {
+      "elapsed_ms": {
+        "median": 806,
+        "min": 799,
+        "max": 911,
+        "runs": [
+          806,
+          911,
+          799
+        ]
+      },
+      "peak_working_set_bytes": {
+        "median": 25116672,
+        "min": 25104384,
+        "max": 25137152,
+        "runs": [
+          25137152,
+          25116672,
+          25104384
+        ]
+      }
+    },
+    "snapshot_2": {
+      "elapsed_ms": {
+        "median": 838,
+        "min": 745,
+        "max": 856,
+        "runs": [
+          856,
+          838,
+          745
+        ]
+      },
+      "peak_working_set_bytes": {
+        "median": 25063424,
+        "min": 25059328,
+        "max": 25088000,
+        "runs": [
+          25059328,
+          25063424,
+          25088000
+        ]
+      }
+    },
+    "diff": {
+      "elapsed_ms": {
+        "median": 609,
+        "min": 564,
+        "max": 662,
+        "runs": [
+          662,
+          609,
+          564
+        ]
+      },
+      "peak_working_set_bytes": {
+        "median": 57651200,
+        "min": 57622528,
+        "max": 57733120,
+        "runs": [
+          57651200,
+          57622528,
+          57733120
+        ]
+      }
+    },
+    "scan_internal_duration_ms": {
+      "median": 366,
+      "min": 365,
+      "max": 381,
+      "runs": [
+        366,
+        365,
+        381
+      ]
+    },
+    "cancel_internal_duration_ms": {
+      "median": 32,
+      "min": 30,
+      "max": 34,
+      "runs": [
+        32,
+        30,
+        34
+      ]
+    }
+  },
+  "validation": {
+    "cancel_stopped_at": 10000,
+    "diff_added_files": 1,
+    "diff_removed_files": 1,
+    "diff_grown_files": 1,
+    "all_exit_codes": 0,
+    "memory_source": "Windows GetProcessMemoryInfo PeakWorkingSetSize"
+  },
+  "desktop_ui_responsiveness": "not measured by this CLI benchmark",
+  "source_files": [
+    "perf-run-1/performance.json",
+    "perf-run-2/performance.json",
+    "perf-run-3/performance.json"
+  ]
+}

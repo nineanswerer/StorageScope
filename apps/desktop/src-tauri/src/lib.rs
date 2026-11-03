@@ -9,8 +9,9 @@ use storagescope_core::model::DirStat;
 use storagescope_core::{diff as ssdiff, export, snapshot, stats, ScanConfig, Scanner};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-#[tauri::command]
-fn snapshot_database_path(app: AppHandle) -> Result<String, String> {
+mod diagnostics;
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = match std::env::var_os("STORAGESCOPE_DATA_DIR") {
         Some(override_dir) => {
             let path = PathBuf::from(override_dir);
@@ -25,10 +26,22 @@ fn snapshot_database_path(app: AppHandle) -> Result<String, String> {
             .map_err(|e| format!("无法定位应用数据目录：{e}"))?,
     };
     std::fs::create_dir_all(&dir).map_err(|e| format!("无法创建应用数据目录：{e}"))?;
-    let dir = dir
-        .canonicalize()
-        .map_err(|e| format!("无法解析应用数据目录：{e}"))?;
-    Ok(dir.join("storagescope-snapshots.db").display().to_string())
+    dir.canonicalize()
+        .map_err(|e| format!("无法解析应用数据目录：{e}"))
+}
+
+#[tauri::command]
+fn snapshot_database_path(app: AppHandle) -> Result<String, String> {
+    Ok(app_data_dir(&app)?
+        .join("storagescope-snapshots.db")
+        .display()
+        .to_string())
+}
+
+#[tauri::command]
+fn export_diagnostics(app: AppHandle, path: String) -> Result<(), String> {
+    let data_dir = app_data_dir(&app)?;
+    diagnostics::export(&data_dir, Path::new(&path)).map(|_| ())
 }
 
 /// 串行执行扫描、分析与写操作，取消令牌只属于当前操作。
@@ -41,14 +54,92 @@ struct ActiveOperation {
     cancel: Arc<AtomicBool>,
 }
 
+struct OperationLogger {
+    data_dir: Option<PathBuf>,
+    operation: &'static str,
+    redactions: Vec<String>,
+    completed: bool,
+}
+
 struct OperationGuard {
     state: Arc<OperationState>,
     id: u64,
     cancel: Arc<AtomicBool>,
+    logger: Option<OperationLogger>,
+}
+
+impl OperationGuard {
+    fn with_logging(
+        mut self,
+        app: &AppHandle,
+        operation: &'static str,
+        paths: &[&str],
+    ) -> Self {
+        let data_dir = app_data_dir(app).ok();
+        let mut redactions = Vec::new();
+        if let Some(dir) = &data_dir {
+            redactions.push(dir.display().to_string());
+        }
+        for path in paths {
+            redactions.push((*path).to_string());
+            if let Ok(canonical) = Path::new(path).canonicalize() {
+                let canonical = canonical.display().to_string();
+                if !redactions.contains(&canonical) {
+                    redactions.push(canonical);
+                }
+            }
+        }
+        if let Some(dir) = &data_dir {
+            let _ = diagnostics::append(dir, operation, self.id, "started", None, &redactions);
+        }
+        self.logger = Some(OperationLogger {
+            data_dir,
+            operation,
+            redactions,
+            completed: false,
+        });
+        self
+    }
+
+    fn finish<T>(&mut self, result: &Result<T, String>) {
+        let Some(logger) = &mut self.logger else {
+            return;
+        };
+        let (phase, detail) = match result {
+            Ok(_) => ("succeeded", None),
+            Err(error) if error.contains("取消") => ("cancelled", Some(error.as_str())),
+            Err(error) => ("failed", Some(error.as_str())),
+        };
+        if let Some(dir) = &logger.data_dir {
+            let _ = diagnostics::append(
+                dir,
+                logger.operation,
+                self.id,
+                phase,
+                detail,
+                &logger.redactions,
+            );
+        }
+        logger.completed = true;
+    }
 }
 
 impl Drop for OperationGuard {
     fn drop(&mut self) {
+        if let Some(logger) = &self.logger {
+            if !logger.completed {
+                if let Some(dir) = &logger.data_dir {
+                    let _ = diagnostics::append(
+                        dir,
+                        logger.operation,
+                        self.id,
+                        "interrupted",
+                        Some("操作未返回最终结果"),
+                        &logger.redactions,
+                    );
+                }
+            }
+        }
         let mut active = self.state.active.lock().unwrap();
         if active.as_ref().is_some_and(|operation| operation.id == self.id) {
             *active = None;
@@ -73,6 +164,7 @@ fn begin_operation(state: &Arc<OperationState>) -> Result<OperationGuard, String
         state: state.clone(),
         id,
         cancel,
+        logger: None,
     })
 }
 
@@ -123,7 +215,7 @@ async fn scan_directory(
     state: State<'_, Arc<OperationState>>,
     path: String,
 ) -> Result<serde_json::Value, String> {
-    let _operation = begin_operation(state.inner())?;
+    let mut _operation = begin_operation(state.inner())?.with_logging(&app, "scan", &[&path]);
     let scanner = Scanner::with_cancel(
         ScanConfig {
             follow_links: false,
@@ -131,7 +223,7 @@ async fn scan_directory(
         },
         _operation.cancel.clone(),
     );
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let root = Path::new(&path)
             .canonicalize()
             .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
@@ -153,7 +245,9 @@ async fn scan_directory(
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    _operation.finish(&result);
+    result
 }
 
 /// 扫描并保存快照。取消时返回错误，不留下损坏快照。
@@ -164,7 +258,8 @@ async fn save_snapshot(
     path: String,
     db: String,
 ) -> Result<serde_json::Value, String> {
-    let _operation = begin_operation(state.inner())?;
+    let mut _operation =
+        begin_operation(state.inner())?.with_logging(&app, "snapshot_save", &[&path, &db]);
     let scanner = Scanner::with_cancel(
         ScanConfig {
             follow_links: false,
@@ -172,7 +267,7 @@ async fn save_snapshot(
         },
         _operation.cancel.clone(),
     );
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let root = Path::new(&path)
             .canonicalize()
             .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
@@ -204,7 +299,9 @@ async fn save_snapshot(
         }))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    _operation.finish(&result);
+    result
 }
 
 #[tauri::command]
@@ -216,18 +313,22 @@ fn list_snapshots(db: String) -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 async fn diff_snapshots(
+    app: AppHandle,
     state: State<'_, Arc<OperationState>>,
     db: String,
     old: i64,
     new: i64,
 ) -> Result<DiffReport, String> {
-    let _operation = begin_operation(state.inner())?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let mut _operation =
+        begin_operation(state.inner())?.with_logging(&app, "snapshot_diff", &[&db]);
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let conn = snapshot::open(Path::new(&db)).map_err(|e| e.to_string())?;
         ssdiff::diff(&conn, old, new)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    _operation.finish(&result);
+    result
 }
 
 /// 清理分析（M3）：扫描 + 缓存识别 + 大文件 + 重复文件检测。
@@ -242,7 +343,8 @@ async fn analyze_cleanup(
     dupe_min_mib: u64,
     skip_dupes: bool,
 ) -> Result<serde_json::Value, String> {
-    let _operation = begin_operation(state.inner())?;
+    let mut _operation =
+        begin_operation(state.inner())?.with_logging(&app, "analyze", &[&path, &db]);
     let scanner = Scanner::with_cancel(
         ScanConfig {
             follow_links: false,
@@ -251,7 +353,7 @@ async fn analyze_cleanup(
         _operation.cancel.clone(),
     );
     let cancel = _operation.cancel.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let root = Path::new(&path)
             .canonicalize()
             .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
@@ -309,7 +411,9 @@ async fn analyze_cleanup(
         serde_json::to_value(report).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    _operation.finish(&result);
+    result
 }
 
 /// 导出统计树为 JSON 或 CSV。
@@ -336,6 +440,7 @@ fn export_diff(report: DiffReport, path: String, format: String) -> Result<(), S
 /// 报告只记录待清空大小，不把回收站动作写成已经释放空间。
 #[tauri::command]
 async fn execute_cleanup_plan(
+    app: AppHandle,
     state: State<'_, Arc<OperationState>>,
     root: String,
     analysis: storagescope_core::rules::AnalysisReport,
@@ -343,8 +448,9 @@ async fn execute_cleanup_plan(
     reference_dirs: Vec<String>,
     excluded_dirs: Vec<String>,
 ) -> Result<serde_json::Value, String> {
-    let _operation = begin_operation(state.inner())?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let mut _operation =
+        begin_operation(state.inner())?.with_logging(&app, "cleanup", &[&root]);
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let root = Path::new(&root)
             .canonicalize()
             .map_err(|e| format!("扫描根目录不可解析：{e}"))?;
@@ -358,7 +464,9 @@ async fn execute_cleanup_plan(
         serde_json::to_value(report).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    _operation.finish(&result);
+    result
 }
 
 /// 空间合并：先验证保留边界与路径，再逐组重新校验全文哈希。
@@ -371,8 +479,8 @@ async fn merge_duplicates(
     reference_dirs: Vec<String>,
     excluded_dirs: Vec<String>,
 ) -> Result<serde_json::Value, String> {
-    let _operation = begin_operation(state.inner())?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let mut _operation = begin_operation(state.inner())?.with_logging(&app, "merge", &[&root]);
+    let result = tauri::async_runtime::spawn_blocking(move || {
         storagescope_core::plan::validate_merge_groups(&groups, &reference_dirs, &excluded_dirs)?;
         let root_path = Path::new(&root)
             .canonicalize()
@@ -395,7 +503,9 @@ async fn merge_duplicates(
         serde_json::to_value(report).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    _operation.finish(&result);
+    result
 }
 
 /// 操作闭环：在资源管理器中定位文件（选中）或打开目录。
@@ -434,6 +544,7 @@ pub fn run() {
             reveal_in_explorer,
             export_tree,
             export_diff,
+            export_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("运行 StorageScope 桌面端失败");

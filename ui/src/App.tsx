@@ -573,6 +573,7 @@ export default function App() {
   }
 
   async function refreshSnapshots() {
+    if (!db.trim()) return;
     try {
       const list = await invoke<SnapshotMeta[]>("list_snapshots", { db });
       setSnapshots(list);
@@ -623,18 +624,37 @@ export default function App() {
 
   async function exportTree(fmt: string) {
     if (!tree) return;
-    const p = await save({ defaultPath: `storagescope-统计.${fmt}` });
-    if (!p) return;
-    await invoke("export_tree", { tree, path: p, format: fmt });
-    setMessage(`已导出：${p}`);
+    try {
+      const p = await save({ defaultPath: `storagescope-统计.${fmt}` });
+      if (!p) return;
+      await invoke("export_tree", { tree, path: p, format: fmt });
+      setMessage(`已导出：${p}`);
+    } catch (error) {
+      setMessage(`导出统计失败：${String(error)}`);
+    }
   }
 
   async function exportDiff(fmt: string) {
     if (!report) return;
-    const p = await save({ defaultPath: `storagescope-差异.${fmt}` });
-    if (!p) return;
-    await invoke("export_diff", { report, path: p, format: fmt });
-    setMessage(`已导出：${p}`);
+    try {
+      const p = await save({ defaultPath: `storagescope-差异.${fmt}` });
+      if (!p) return;
+      await invoke("export_diff", { report, path: p, format: fmt });
+      setMessage(`已导出：${p}`);
+    } catch (error) {
+      setMessage(`导出差异失败：${String(error)}`);
+    }
+  }
+
+  async function exportDiagnostics() {
+    try {
+      const p = await save({ defaultPath: "storagescope-诊断.json" });
+      if (!p) return;
+      await invoke("export_diagnostics", { path: p });
+      setMessage(`诊断已导出：${p}\n分享前请检查文件内容。`);
+    } catch (error) {
+      setMessage(`导出诊断失败：${String(error)}`);
+    }
   }
 
   const snapshotStats = useMemo(() => {
@@ -854,7 +874,7 @@ export default function App() {
                 <div className="cleanup-controls">
                   <label className="db-field">
                     <span>快照数据库</span>
-                    <input aria-label="快照数据库路径" value={db} onChange={(e) => setDb(e.target.value)} placeholder="快照数据库路径" />
+                    <input aria-label="快照数据库路径" value={db} readOnly placeholder="正在定位应用数据目录…" title="快照保存在固定的用户应用数据目录" />
                   </label>
                   <label className="check">
                     自动快照
@@ -865,7 +885,8 @@ export default function App() {
                       <option value={360}>每 6 小时</option>
                     </select>
                   </label>
-                  <button onClick={refreshSnapshots}>刷新</button>
+                  <button onClick={refreshSnapshots} disabled={!db.trim()}>刷新</button>
+                  <button onClick={exportDiagnostics} title="导出脱敏操作日志和应用环境信息">导出诊断</button>
                   <button className="primary" onClick={doSaveSnapshot} disabled={!path.trim() || !db.trim() || scanning || analyzing || trashing || merging}>
                     {scanning ? "正在保存…" : "扫描并保存快照"}
                   </button>
