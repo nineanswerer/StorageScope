@@ -6,11 +6,17 @@ import {
   normalizeCleanupPath,
   orderedDupeFiles,
   protectionReason,
+  sectionAfterScan,
   selectedCleanupBytes,
   selectedDupeGroups,
   updateDupeKeepSelection,
   withoutProtectedPaths,
 } from "../src/cleanupModel.ts";
+
+test("取消扫描停留在结果页，完整扫描才进入目录结构", () => {
+  assert.equal(sectionAfterScan(true), "scan");
+  assert.equal(sectionAfterScan(false), "structure");
+});
 
 const emptyAnalysis = () => ({
   scan_id: "test-scan",

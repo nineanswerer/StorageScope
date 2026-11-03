@@ -109,14 +109,9 @@ impl OperationGuard {
         self
     }
 
-    fn finish<T>(&mut self, result: &Result<T, String>) {
+    fn record(&mut self, phase: &'static str, detail: Option<&str>) {
         let Some(logger) = &mut self.logger else {
             return;
-        };
-        let (phase, detail) = match result {
-            Ok(_) => ("succeeded", None),
-            Err(error) if error.contains("取消") => ("cancelled", Some(error.as_str())),
-            Err(error) => ("failed", Some(error.as_str())),
         };
         if let Some(dir) = &logger.data_dir {
             let _ = diagnostics::append(
@@ -130,6 +125,33 @@ impl OperationGuard {
         }
         logger.completed = true;
     }
+
+    fn finish<T>(&mut self, result: &Result<T, String>) {
+        let (phase, detail) = match result {
+            Ok(_) => ("succeeded", None),
+            Err(error) if error.contains("取消") => ("cancelled", Some(error.as_str())),
+            Err(error) => ("failed", Some(error.as_str())),
+        };
+        self.record(phase, detail);
+    }
+
+    fn finish_scan(&mut self, result: &Result<serde_json::Value, String>) {
+        if scan_result_cancelled(result) {
+            self.record("cancelled", Some("扫描已取消，结果不完整"));
+        } else {
+            self.finish(result);
+        }
+    }
+}
+
+fn scan_result_cancelled(result: &Result<serde_json::Value, String>) -> bool {
+    result
+        .as_ref()
+        .ok()
+        .and_then(|value| value.get("outcome"))
+        .and_then(|outcome| outcome.get("cancelled"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 impl Drop for OperationGuard {
@@ -260,7 +282,7 @@ async fn scan_directory(
     })
     .await
     .map_err(|e| e.to_string())?;
-    _operation.finish(&result);
+    _operation.finish_scan(&result);
     result
 }
 
@@ -567,8 +589,21 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{begin_operation, resolve_trash_target, resolve_within_root, OperationState};
+    use super::{
+        begin_operation, resolve_trash_target, resolve_within_root, scan_result_cancelled,
+        OperationState,
+    };
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn scan_logging_recognizes_cancelled_success_payloads() {
+        let cancelled = Ok(serde_json::json!({"outcome": {"cancelled": true}}));
+        let completed = Ok(serde_json::json!({"outcome": {"cancelled": false}}));
+        let failed = Err("scan failed".to_string());
+        assert!(scan_result_cancelled(&cancelled));
+        assert!(!scan_result_cancelled(&completed));
+        assert!(!scan_result_cancelled(&failed));
+    }
 
     #[test]
     fn operations_are_mutually_exclusive_and_release_on_drop() {

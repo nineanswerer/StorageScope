@@ -41,6 +41,10 @@ export type AnalysisReport = {
   hash_errors: number;
 };
 
+export function sectionAfterScan(cancelled: boolean): "scan" | "structure" {
+  return cancelled ? "scan" : "structure";
+}
+
 export type CleanupKind = "cache" | "big" | "dupe";
 
 export type CleanupItem = {

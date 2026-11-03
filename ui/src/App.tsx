@@ -15,6 +15,7 @@ import {
   orderedDupeFiles,
   protectionReason,
   reconcileAnalysisAfterCleanup,
+  sectionAfterScan,
   selectedCleanupBytes,
   selectedDupeGroups,
   updateDupeKeepSelection,
@@ -546,7 +547,7 @@ export default function App() {
       const r = await invoke<{ outcome: ScanOutcome; tree: DirStat }>("scan_directory", { path: root });
       setOutcome(r.outcome);
       setTree(r.tree);
-      setSection("structure"); // 扫描完成直接进入目录结构
+      setSection(sectionAfterScan(r.outcome.cancelled));
     } catch (e) {
       setMessage(String(e));
     } finally {
