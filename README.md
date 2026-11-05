@@ -85,6 +85,26 @@ node -e "require('../../../ui/node_modules/@tauri-apps/cli/main.js').run(['build
 
 安装包输出到 `apps/desktop/src-tauri/target/release/bundle/nsis/`。
 
+### 构建免安装 ZIP
+
+NSIS 构建完成后，在仓库根目录运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-portable.ps1
+```
+
+脚本读取桌面版本，打包主程序与使用文档，并验证解包后的主程序 SHA-256。ZIP 输出到 `apps/desktop/src-tauri/target/release/bundle/portable/`。
+
+### 核验远程发布资产
+
+上传对应 Release 后，在仓库根目录运行以下命令，重新下载 NSIS 和 ZIP 并与本地构建比较：
+
+```powershell
+python scripts/verify_release_assets.py --tag v0.3.0-beta.2
+```
+
+后续版本替换标签。结项状态、恢复开发入口和公开／私有开发方式见[Beta 结项与交接](docs/18-beta-closure-handoff.md)。
+
 ## 检查与测试
 
 在仓库根目录运行 Rust 检查：

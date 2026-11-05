@@ -16,6 +16,8 @@
 - [ ] 使用同一前端生产构建生成 NSIS。
 - [ ] 免安装 ZIP 使用同一 release 主程序，并包含用户说明与第三方声明。
 - [ ] 记录主程序、安装包和 ZIP 的字节数与 SHA-256。
+
+通用复现脚本：`scripts/package-portable.ps1` 生成并检查免安装 ZIP；`scripts/verify_release_assets.py --tag <标签>` 重新下载远程 NSIS 与 ZIP，并同本地构建比较。
 - [ ] 有代码签名证书时，按[签名流程](SIGNING.md)签署并用 `signtool verify /pa` 验证。
 - [ ] 没有证书时明确标记“未签名”，不得把自签名或时间戳当作有效发布签名。
 
